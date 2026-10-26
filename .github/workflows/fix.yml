@@ -2,8 +2,9 @@
 # across the named repos, each cloned under work/<repo>; it can edit, build, test and commit but not push. The step
 # after it pushes a branch and opens a draft PR in each repo it changed, cross-linked.
 #
-# Claude Code can't push, by credentials and not just by its tool list: the clones have no credentials in their
-# remotes, Claude Code's own token can only read gnome-bot, and the token that can push exists only in the PR step.
+# Claude Code can't push, by credentials and not by its tool list (which allows every git command): the clones have no
+# credentials in their remotes, Claude Code's own token can only read gnome-bot, and the token that can push exists only
+# in the PR step.
 # That token comes from the GitHub App, which has no Workflows permission, so a fix can't change CI.
 #
 # Inputs come from alerts and Slack: they reach shell steps only through env, never interpolated into a script.
@@ -138,9 +139,11 @@ jobs:
 
             Make the smallest change that fixes the cause, with a test that would have caught it where a repo has
             tests for that code. When the fix spans repos, change each side so they agree with each other, and leave
-            a repo untouched if it turns out not to need a change. In each repo you change, run its build and the
-            relevant tests, then commit there: `cd work/<repo> && git add ... && git commit -m "..."`. Don't push,
-            don't change .github/, and don't refactor beyond the fix.
+            a repo untouched if it turns out not to need a change. Work on each repo from here without `cd`: `git -C
+            work/<repo> ...`, `mvn -f work/<repo>/pom.xml ...`, `poetry -C work/<repo> ...`, `npm --prefix
+            work/<repo> ...`. In each repo you change, run its build and the relevant tests, then commit there with
+            `git -C work/<repo> add` and `git -C work/<repo> commit`. Don't push, don't change .github/, and don't
+            refactor beyond the fix.
 
             If the cause isn't in these repos' code, or you can't find a change you'd stand behind, change nothing
             and say why. Report with `changed` (whether you committed anything), `title` (a PR title), `summary`
@@ -150,8 +153,17 @@ jobs:
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns 120
-            --allowedTools "Edit,Write,Read,Glob,Grep,Bash(cd:*),Bash(git add:*),Bash(git commit:*),Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git show:*),Bash(mvn:*),Bash(poetry:*),Bash(npm:*),Bash(npx:*),Bash(ls:*),Bash(cat:*)"
+            --allowedTools "Edit,Write,Read,Glob,Grep,Bash(git:*),Bash(mvn:*),Bash(poetry:*),Bash(npm:*),Bash(npx:*),Bash(ls:*),Bash(cat:*),Bash(find:*),Bash(grep:*)"
             --json-schema '{"type":"object","properties":{"changed":{"type":"boolean"},"title":{"type":"string"},"summary":{"type":"string"},"tests":{"type":"string"},"merge_order":{"type":"string"}},"required":["changed","summary"]}'
+
+      # The tool calls Claude Code wasn't allowed to make, so a run that couldn't do its job says why in the log.
+      - name: Permission denials
+        if: always() && steps.claude.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          jq -r '.[] | select(.type == "result") | .permission_denials[]?
+                 | "\(.tool_name): \(.tool_input.command // (.tool_input | tostring))"' "$EXECUTION_FILE" || true
 
       - name: Push and open draft PRs
         id: pr
