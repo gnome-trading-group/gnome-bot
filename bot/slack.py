@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 MAX_REQUEST_AGE_SECONDS = 300
 # chat.update refuses text over 40,000 characters; long answers are cut with a pointer to ask a narrower question.
 MAX_TEXT = 39_000
+# A section block holds at most 3,000 characters of text.
+MAX_SECTION = 3000
+MENTION = re.compile(r"<@([A-Z0-9]+)>")
 
 
 class SlackError(RuntimeError):
@@ -91,6 +94,31 @@ def thread_messages(channel: str, thread_ts: str, limit: int) -> list[dict]:
 
 def permalink(channel: str, ts: str) -> str:
     return _call("chat.getPermalink", {"channel": channel, "message_ts": ts}, "GET")["permalink"]
+
+
+def text_blocks(text: str) -> list[dict]:
+    """Sections for `text`, split between paragraphs where it can be, so a long reply survives the section limit."""
+    blocks, current = [], ""
+    for paragraph in _clip(text).split("\n\n"):
+        while len(paragraph) > MAX_SECTION:
+            blocks.append(paragraph[:MAX_SECTION])
+            paragraph = paragraph[MAX_SECTION:]
+        if current and len(current) + 2 + len(paragraph) > MAX_SECTION:
+            blocks.append(current)
+            current = paragraph
+        else:
+            current = f"{current}\n\n{paragraph}" if current else paragraph
+    if current:
+        blocks.append(current)
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": chunk}} for chunk in blocks]
+
+
+def user_email(user_id: str) -> str | None:
+    try:
+        return (_call("users.info", {"user": user_id}, "GET")["user"].get("profile") or {}).get("email")
+    except Exception:
+        logger.warning("Couldn't look up Slack user %s", user_id, exc_info=True)
+        return None
 
 
 def user_name(user_id: str) -> str:

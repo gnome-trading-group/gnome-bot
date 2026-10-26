@@ -14,13 +14,26 @@ describe('BotStack', () => {
   const monitoring = new BotMonitoringStack(scope, 'BotMonitoring', {
     env: GnomeAccount.InfraDev.environment,
     ingressFn: stack.ingressFn, workerFn: stack.workerFn, workerLogGroup: stack.workerLogGroup, queue: stack.queue,
-    dlq: stack.dlq,
+    dlq: stack.dlq, interactFn: stack.interactFn, callbackFn: stack.callbackFn,
   });
   const template = Template.fromStack(stack);
 
-  it('takes Slack events on one public POST route', () => {
+  it('takes Slack events and fix-run callbacks, each on one public POST route', () => {
     const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).map((m) => m.Properties.HttpMethod);
-    expect(methods).toEqual(['POST']);
+    expect(methods).toEqual(['POST', 'POST']);
+    expect(Object.values(template.findResources('AWS::ApiGateway::Resource')).map((r) => r.Properties.PathPart).sort())
+      .toEqual(['callback', 'events', 'github', 'slack']);
+  });
+
+  it('names the interact function so the launcher can invoke it without an import', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', { FunctionName: 'gnome-bot-interact' });
+  });
+
+  it('tells the functions where fix runs report back', () => {
+    const fns = Object.values(template.findResources('AWS::Lambda::Function'))
+      .filter((f: any) => f.Properties.Environment?.Variables?.CALLBACK_URL);
+    expect(fns.length).toBe(4);
+    expect(JSON.stringify(fns[0].Properties.Environment.Variables.CALLBACK_URL)).toContain('/api/github/callback');
   });
 
   it('queues alerts the registry posted to Slack for triage', () => {
@@ -71,8 +84,9 @@ describe('BotStack', () => {
   it('builds alarms the alerting stack can read', () => {
     const names = Object.values(Template.fromStack(monitoring).findResources('AWS::CloudWatch::Alarm'))
       .map((a) => a.Properties.AlarmName).sort();
-    expect(names).toEqual(['Bot-AnswerFailures-Warning', 'Bot-Dlq-Warning', 'Bot-IngressErrors-Warning',
-      'Bot-QueueAge-Warning', 'Bot-WorkerErrors-Warning']);
+    expect(names).toEqual(['Bot--Answers-AnswerFailures-Warning', 'Bot--SlackEvents-Fault-Count-Warning',
+      'Bot--WorkQueue-DLQ-Queue-Message-Count-Max-Warning', 'Bot--WorkQueue-Queue-Message-Age-Max-Warning',
+      'Bot--Worker-Fault-Count-Warning', 'Bot--Interact-Fault-Count-Warning', 'Bot--GithubCallback-Fault-Count-Warning'].sort());
   });
 });
 

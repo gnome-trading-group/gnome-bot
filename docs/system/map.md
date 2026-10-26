@@ -24,9 +24,13 @@ This map is the only cross-repo picture: what talks to what and where each thing
 | gnome-bot | This bot | BotStack, BotMonitoringStack |
 
 Libraries (no stacks): gnome-core, gnome-schemas, gnome-logging, gnome-networking, gnome-sequencer, gnome-gateways
-(venue connections), gnome-oms (order management), gnome-strategies (strategy code), gnome-backtest, gnomepy (the
-Python client and backtest bridge), gnomepy-research, gnome-shared-cdk (shared CDK constructs, including the API
-authorizer).
+(venue connections, also used by the market data collectors), gnome-oms (orders, positions, risk checks, kill
+switches, the ledger writer), gnome-strategies (the strategy framework only: StrategyAgent, graceful exit, the Python
+bridge), gnome-backtest, gnomepy (the Python client and backtest bridge), gnome-shared-cdk (shared CDK constructs,
+including the API authorizer).
+
+The live strategies themselves are Python classes in gnomepy-research (`gnomepy_research.sessions.<name>.strategy`);
+a session's config names one in `strategy.class`.
 
 ## How things flow
 

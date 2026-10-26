@@ -5,10 +5,9 @@ A failure after the placeholder is posted is answered in the thread and not retr
 second placeholder and re-spend the tokens. Out of credit is the same; it won't fix itself in a retry."""
 import json
 import logging
-import re
 from typing import Callable
 
-from bot import agent, alerts, config, llm, slack
+from bot import agent, alerts, config, fixes, llm, slack
 from bot.runtime_config import BotConfig, runtime_config
 from bot.store import Store
 from bot.tools import READ_TOOLS
@@ -36,12 +35,24 @@ Reply in exactly this shape, and keep it short:
 *Next step:* what a person should do now, from the runbook when there is one.
 *Confidence:* low, medium or high, and why in a few words.
 
-If you can't find a cause, say so plainly under Likely cause and list what you checked as Evidence."""
+If you can't find a cause, say so plainly under Likely cause and list what you checked as Evidence.
+
+End with one more line, on its own: `Repo: <name>` naming the gnome-trading-group repo where a code change would fix
+this (e.g. `Repo: gnome-registry`), or `Repo: none` when the fix isn't a code change (a venue outage, a config or
+credential to change, something a person must do). When the fix needs changes in more than one repo (e.g. an API and
+its client), name up to three, comma-separated, in the order they'd have to ship (`Repo: gnomepy, gnome-classifier`).
+Only name a repo when you've seen evidence the cause is in its code."""
+CHANGE_REQUEST_INSTRUCTIONS = """If the person is asking for a change to the code (a bug fixed, a behaviour changed, a \
+message reworded), look into it with the tools: find the code involved and say concretely what you would change and \
+where. Then end your reply with one more line, on its own: `Repo: <name>` naming the gnome-trading-group repo to \
+change, or up to three comma-separated in the order they'd ship. That line offers them a button that starts a draft PR \
+for the change, so only add it when they asked for a change and you've found where it goes. Never add it to a reply \
+that only answers a question."""
+
 MAX_HISTORY = 30
 # conversations.replies is oldest first; threads past this many replies lose their newest ones.
 THREAD_FETCH_LIMIT = 200
 MAX_MESSAGE_CHARS = 2000
-MENTION = re.compile(r"<@([A-Z0-9]+)>")
 
 _store: Store | None = None
 
@@ -69,7 +80,7 @@ def build_question(channel: str, thread_ts: str, current_ts: str, bot_user_id: s
         return names[user_id]
 
     def readable(message: dict) -> str:
-        text = MENTION.sub(lambda m: "" if m.group(1) == bot_user_id else f"@{name(m.group(1))}", _message_text(message))
+        text = slack.MENTION.sub(lambda m: "" if m.group(1) == bot_user_id else f"@{name(m.group(1))}", _message_text(message))
         return text.strip()[:MAX_MESSAGE_CHARS]
 
     history, current = [], None
@@ -92,9 +103,11 @@ def build_question(channel: str, thread_ts: str, current_ts: str, bot_user_id: s
 
 
 def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, placeholder_text: str, role: str,
-             prompt: Callable[[str], str], extra_system: str | None = None) -> None:
+             prompt: Callable[[str], str], extra_system: str | None = None,
+             render: Callable[[str], tuple[str, list | None]] | None = None) -> None:
     """Posts a placeholder in the thread and replaces it with the agent's answer, or with why there isn't one.
-    `prompt` gets the placeholder's ts, so a transcript of the thread can leave it out."""
+    `prompt` gets the placeholder's ts, so a transcript of the thread can leave it out; `render` turns the answer into
+    the message's text and blocks."""
     placeholder = slack.post(channel, thread_ts, placeholder_text)
     store.track_thread(channel, thread_ts)
     if store.tokens_today() >= cfg.limits.daily_token_budget:
@@ -123,18 +136,38 @@ def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, placeho
         return
 
     store.add_tokens(answer.tokens)
-    slack.update(channel, placeholder, slack.mrkdwn(answer.text))
+    text, blocks = render(answer.text) if render else (slack.mrkdwn(answer.text), None)
+    slack.update(channel, placeholder, text, blocks)
     logger.info("Answered %s/%s (%s) with %s using %d tokens", channel, thread_ts, role, answer.provider, answer.tokens)
 
 
 def answer_question(message: dict, store: Store) -> None:
     cfg = runtime_config.config
     channel, thread_ts = message["channel"], message["thread_ts"]
+    if fixes.is_fix_request(message["text"]) and store.fix_context(channel, thread_ts) is not None:
+        fixes.request_fix(cfg, store, channel, thread_ts, message["user"])
+        return
     if not cfg.feature_flags.qa_enabled:
         slack.post(channel, thread_ts, "I'm not answering questions yet (feature flag `qa_enabled` is off).")
         return
-    _respond(cfg, store, channel, thread_ts, PLACEHOLDER, "qa",
-             lambda placeholder: build_question(channel, thread_ts, message["ts"], message["bot_user_id"], {placeholder}))
+    asked: dict[str, str] = {}
+
+    def prompt(placeholder: str) -> str:
+        asked["question"] = build_question(channel, thread_ts, message["ts"], message["bot_user_id"], {placeholder})
+        return asked["question"]
+
+    def render(answer: str) -> tuple[str, list | None]:
+        reply, repos = fixes.split_repo_line(answer)
+        text = slack.mrkdwn(reply)
+        if not repos:
+            return text, None
+        store.save_fix_context(channel, thread_ts, {"repos": repos, "request": asked.get("question", ""),
+                                                    "triage": reply})
+        if not cfg.feature_flags.fix_enabled:
+            return text, None
+        return text, [*slack.text_blocks(text), fixes.fix_button(channel, thread_ts, repos)]
+
+    _respond(cfg, store, channel, thread_ts, PLACEHOLDER, "qa", prompt, CHANGE_REQUEST_INSTRUCTIONS, render)
 
 
 def cooldown_key(alert: dict) -> str:
@@ -172,8 +205,19 @@ def triage_alert(alert: dict, store: Store) -> None:
         return
     # Recorded before the run, so a burst of the same alert gets one triage rather than several at once.
     store.record_triage(key, channel, alert_ts, cfg.triage.cooldown_minutes * 60)
+
+    def render(answer: str) -> tuple[str, list | None]:
+        triage, repos = fixes.split_repo_line(answer)
+        text = slack.mrkdwn(triage)
+        if not repos:
+            return text, None
+        store.save_fix_context(channel, alert_ts, {"repos": repos, "alert": alert, "triage": triage})
+        if not cfg.feature_flags.fix_enabled:
+            return text, None
+        return text, [*slack.text_blocks(text), fixes.fix_button(channel, alert_ts, repos)]
+
     _respond(cfg, store, channel, alert_ts, TRIAGE_PLACEHOLDER, "triage", lambda _: triage_prompt(alert),
-             TRIAGE_INSTRUCTIONS)
+             TRIAGE_INSTRUCTIONS, render)
 
 
 def handler(event, context):

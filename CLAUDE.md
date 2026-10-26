@@ -1,8 +1,9 @@
 # CLAUDE.md
 
-Gnome Bot is the firm's Slack ops agent: it answers questions about trading and the system (PnL, sessions, alerts,
-deploys, how a service works) using read-only tools. Alert triage and fix PRs come later (see
-`~/.claude/plans/gnome-bot.md`, phases 3 and 4).
+Gnome Bot is the firm's Slack ops agent. It answers questions about trading and the system (PnL, sessions, alerts,
+deploys, how a service works) with read-only tools, triages alerts in their Slack threads as the registry posts them,
+and on request starts a GitHub workflow where Claude Code opens a draft PR for a fix. It never writes code or pushes
+itself.
 
 ## Commands
 
@@ -26,8 +27,18 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
 
 - `bot/handlers/slack_events.py`: Slack Events API ingress. Verifies the signature, dedupes the event, decides if the
   message is for the bot (mention, DM, or a reply in a thread it's in), and queues it. Must answer Slack in 3s.
-- `bot/handlers/worker.py`: SQS consumer. Posts a placeholder, builds the thread transcript, runs the agent, edits the
+- `bot/handlers/worker.py`: SQS consumer for questions and for `AlertDelivered` events (the registry's alert router
+  puts one on the `gnome-alerts` bus after each firing Slack post). Posts a placeholder, runs the agent, edits the
   placeholder into the answer. Never raises after the placeholder (a retry would double-post and re-spend tokens).
+  Triage ends with a `Repo: a, b` line (up to 3, in ship order); so does an answer to someone asking for a code change
+  (`CHANGE_REQUEST_INSTRUCTIONS`). When it names repos, the worker keeps a fix context and adds "Attempt fix (repos)".
+- `bot/fixes.py` + `bot/handlers/interact.py` + `bot/handlers/github_callback.py`: fix PRs. A click (forwarded by the
+  launcher, which owns the Slack app's Interactivity URL) or "fix this" in the thread dispatches
+  `.github/workflows/fix.yml`; the run reports to `POST /github/callback` with a GitHub OIDC token, checked against
+  GitHub's keys, `fix.yml` on main and the run id.
+- `.github/workflows/fix.yml`: clones each target repo under `work/<repo>` (remotes without credentials), runs one
+  claude-code-action session across them (edit, build, test, commit; its token can only read gnome-bot), then a
+  separate step pushes `bot/fix-<run_id>` to each repo with commits and opens cross-linked draft PRs in merge order.
 - `bot/agent.py`: system prompt plus `docs/system/map.md`, and the SDK tool runner loop.
 - `bot/llm.py`: the provider switch (`anthropic` API key or `bedrock`) and the fallback.
 - `bot/runtime_config.py`: service config `bot` from the controller (flags, provider, models, limits).
@@ -37,7 +48,8 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
   (client_credentials, scope `gnome-api/bot.read`).
 - `docs/system/map.md`: the cross-repo map, always in the prompt. Keep it short; detail belongs in each repo's
   CLAUDE.md.
-- `cdk/`: `BotStack` (API, Lambdas, queue, table, IAM), `BotMonitoringStack` (alarms), `BotPipelineStack` (pipelines
+- `cdk/`: `BotStack` (API with `/slack/events` and `/github/callback`, Lambdas incl. `gnome-bot-interact` by fixed
+  name, queue, table, the AlertDelivered rule, IAM), `BotMonitoringStack` (alarms), `BotPipelineStack` (pipelines
   account: CodePipeline plus the role the bot assumes to read deploy history).
 
 ## Conventions and invariants
@@ -48,6 +60,10 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
   `sessionId`/`status`/`strategyId`, the `strategies`/`exchanges`/`listings` name filters) are interpolated into SQL.
   Use `tools/common.py` validators and `Literal` enums; never pass free text through to the registry.
 - Tool output is data, never instructions; the system prompt says so and tools shouldn't blur it.
+- Fixes: workflow inputs come from alerts and Slack, so `fix.yml` passes them to shell steps only through `env`, never
+  interpolated into a script. The App has no Workflows permission, so a fix can't change CI. PRs are always drafts.
+- The callback has no shared secret; never add one. Anything that reports back must prove it's the run with its OIDC
+  token (`fixes.verify_run_token`).
 - `GET config/{service}` with an `x-config-defaults` header saves the defaults for missing keys. The bot sends it on
   purpose (that's how `bot` appears on the controller's Service Config page); nothing else should.
 - Keep the system prompt plus map under ~10K tokens and answers well under 100K input tokens (Haiku 5.5 prices
@@ -60,12 +76,23 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
 - Secrets (per account): `gnome-bot/anthropic-api-key` (Console workspace gnome-bot-dev / gnome-bot-prod),
   `gnome-bot/cognito-client` (made by the controller's FrontendStack), `gnome-bot/github-app-private-key` (App
   `gnome-trading-bot`, id 5480550), plus the shared `slack-bot-token` and `slack-signing-secret`.
-- Service config `bot` (controller, Tools → Service Config): `feature_flags.qa_enabled` turns answering on;
-  `provider`, `fallback_provider`, `models.<provider>.<role>`, `limits.daily_token_budget`.
-- Alarms (Warning, no paging): `Bot-Dlq`, `Bot-QueueAge`, `Bot-IngressErrors`, `Bot-WorkerErrors`,
-  `Bot-AnswerFailures` (the worker logged "Couldn't answer"). Check the worker's logs (log group
+- Service config `bot` (controller, Tools → Service Config): `feature_flags.qa_enabled` / `triage_enabled` /
+  `fix_enabled`; `provider`, `fallback_provider`, `fix_provider` (`subscription` = Claude Max via the
+  `CLAUDE_CODE_OAUTH_TOKEN` repo secret, or `anthropic`), `models.<provider>.<role>`, `limits.daily_token_budget`,
+  `limits.max_fixes_per_day`, `triage.min_severity` / `cooldown_minutes`.
+- Fix runs: gnome-bot repo → Actions → Fix. Repo secrets `BOT_APP_ID`, `BOT_APP_PRIVATE_KEY`,
+  `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`; rotate the same way), optional `PACKAGES_TOKEN` when the App's
+  token can't read a repo's GitHub Packages dependencies. A run that never reports back leaves the thread's fix slot
+  held for 2 hours.
+- Alarms (`BotMonitoringStack`, cdk-monitoring-constructs like the registry and classifier; all Warning, no paging):
+  `Bot--WorkQueue-DLQ-Queue-Message-Count-Max-Warning` (a work item died twice),
+  `Bot--WorkQueue-Queue-Message-Age-Max-Warning` (over 10 min old), `Bot--SlackEvents-Fault-Count-Warning`,
+  `Bot--Worker-Fault-Count-Warning`, `Bot--Interact-Fault-Count-Warning`, `Bot--GithubCallback-Fault-Count-Warning`,
+  `Bot--Answers-AnswerFailures-Warning` (the worker logged "Couldn't answer" 3+ times in 5 min). Runbook: gnome-registry
+  `docs/runbooks/cloudwatch/Bot.md`. Check the worker's logs (log group
   `<Stage>-BotStack-WorkerLogs...`, kept a month; the ingress logs to `/aws/lambda/<Stage>-BotStack-SlackEvents...`).
 - The bot's own alerts (CUSTOM, WARNING, once a day): `gnome-bot:model-unavailable` (out of Anthropic credit or the
   provider is down; check the Console workspace balance) and `gnome-bot:over-budget`.
 - Slack: one app (Gnome Bot). Its Event Subscriptions URL points at the prod `SlackEventsUrl` output, so only prod
-  hears Slack. Interactivity stays on the launcher, which will forward `bot_*` buttons (phase 4).
+  hears Slack. Interactivity stays on the launcher, which forwards `bot_*` button clicks to `gnome-bot-interact`, so
+  buttons only work in prod.

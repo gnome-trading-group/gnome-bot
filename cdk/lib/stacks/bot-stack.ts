@@ -25,6 +25,8 @@ export class BotStack extends cdk.Stack {
   public readonly ingressFn: lambda.DockerImageFunction;
   public readonly workerFn: lambda.DockerImageFunction;
   public readonly workerLogGroup: logs.LogGroup;
+  public readonly interactFn: lambda.DockerImageFunction;
+  public readonly callbackFn: lambda.DockerImageFunction;
   public readonly queue: sqs.Queue;
   public readonly dlq: sqs.Queue;
 
@@ -56,6 +58,14 @@ export class BotStack extends cdk.Stack {
       targets: [new targets.SqsQueue(this.queue)],
     });
 
+    // Made before the functions so they can be told the callback URL. The URL is built from the API's id rather than
+    // its deployment, which depends on every method and so on the functions behind them.
+    const api = new apigateway.RestApi(this, 'BotApi', {
+      restApiName: 'gnome-bot-api',
+      deployOptions: { stageName: 'api' },
+    });
+    const callbackUrl = `https://${api.restApiId}.execute-api.${this.region}.${this.urlSuffix}/api/github/callback`;
+
     const pipelinesReadRoleArn =
       `arn:aws:iam::${GnomeAccount.InfraPipelines.accountId}:role/${PIPELINES_READ_ROLE_NAME}`;
     const registryApiKeyId = cdk.Fn.importValue('RegistryApiKeyId');
@@ -70,6 +80,7 @@ export class BotStack extends cdk.Stack {
       // For gnomepy's send_alert, which posts the bot's own alerts with the registry's API key.
       REGISTRY_API_KEY_ID: registryApiKeyId,
       PIPELINES_READ_ROLE_ARN: pipelinesReadRoleArn,
+      CALLBACK_URL: callbackUrl,
     };
 
     const image = (cmd: string) => lambda.DockerImageCode.fromImageAsset(imageAsset, {
@@ -141,11 +152,38 @@ export class BotStack extends cdk.Stack {
       this.workerFn.addToRolePolicy(new iam.PolicyStatement(statement));
     }
 
-    const api = new apigateway.RestApi(this, 'BotApi', {
-      restApiName: 'gnome-bot-api',
-      deployOptions: { stageName: 'api' },
+    const botSecrets = new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [
+        `arn:aws:secretsmanager:${this.region}:${this.account}:secret:slack-bot-token*`,
+        `arn:aws:secretsmanager:${this.region}:${this.account}:secret:gnome-bot/*`,
+      ],
     });
+
+    // Gnome Bot's Slack buttons, forwarded by the launcher (which owns the Slack app's one Interactivity URL) as an
+    // async invoke. Its name is fixed so the launcher can grant and invoke it without importing anything from here.
+    this.interactFn = new lambda.DockerImageFunction(this, 'Interact', {
+      functionName: 'gnome-bot-interact',
+      code: image('bot.handlers.interact.handler'),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+      environment,
+    });
+    table.grantReadWriteData(this.interactFn);
+    this.interactFn.addToRolePolicy(botSecrets);
+
+    // Where a fix run reports its result; it authenticates with its GitHub OIDC token, checked in the handler.
+    this.callbackFn = new lambda.DockerImageFunction(this, 'GithubCallback', {
+      code: image('bot.handlers.github_callback.handler'),
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 512,
+      environment,
+    });
+    table.grantReadWriteData(this.callbackFn);
+    this.callbackFn.addToRolePolicy(botSecrets);
+
     api.root.resourceForPath('slack/events').addMethod('POST', new apigateway.LambdaIntegration(this.ingressFn));
+    api.root.resourceForPath('github/callback').addMethod('POST', new apigateway.LambdaIntegration(this.callbackFn));
 
     new cdk.CfnOutput(this, 'SlackEventsUrl', {
       value: `${api.url}slack/events`,

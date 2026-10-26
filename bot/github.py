@@ -1,5 +1,5 @@
-"""The gnome-bot GitHub App, installed on every org repo. The bot only reads with it here: repo files, docs and code
-search. Installation tokens last an hour."""
+"""The gnome-bot GitHub App, installed on every org repo. The bot reads repo files, docs and code with it, and starts
+its own fix workflow; the workflow, not the bot, writes branches and PRs. Installation tokens last an hour."""
 import base64
 import time
 
@@ -10,6 +10,7 @@ from bot import config
 from bot.aws_secrets import secret_json
 
 API = "https://api.github.com"
+BOT_REPO = "gnome-bot"
 HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 EXPIRY_MARGIN_SECONDS = 300
 
@@ -53,6 +54,18 @@ def _get(path: str, params: dict | None = None, accept: str | None = None):
     if response.status_code >= 400:
         raise GitHubError(response.status_code, response.json().get("message", response.text)[:300])
     return response.json()
+
+
+def dispatch_workflow(workflow: str, inputs: dict[str, str]) -> str:
+    """Starts a gnome-bot workflow on main; returns the run's page, or the workflow's runs page if GitHub doesn't say."""
+    headers = {**HEADERS, "Authorization": f"token {installation_token()}"}
+    response = requests.post(f"{API}/repos/{config.GITHUB_ORG}/{BOT_REPO}/actions/workflows/{workflow}/dispatches",
+                             headers=headers, json={"ref": "main", "inputs": inputs, "return_run_details": True},
+                             timeout=15)
+    if response.status_code >= 400:
+        raise GitHubError(response.status_code, response.text[:300])
+    details = response.json() if response.content else {}
+    return details.get("html_url") or f"https://github.com/{config.GITHUB_ORG}/{BOT_REPO}/actions/workflows/{workflow}"
 
 
 def read_file(repo: str, path: str) -> str:

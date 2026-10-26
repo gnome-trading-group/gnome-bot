@@ -18,6 +18,8 @@ LAUNCHER_API_URL = os.environ.get("LAUNCHER_API_URL", "")
 
 GITHUB_ORG = os.environ.get("GITHUB_ORG", "gnome-trading-group")
 PIPELINES_READ_ROLE_ARN = os.environ.get("PIPELINES_READ_ROLE_ARN", "")
+# Where the fix workflow reports back (this stage's /github/callback route).
+CALLBACK_URL = os.environ.get("CALLBACK_URL", "")
 
 CONTROLLER_UI_URL = {
     "dev": "https://controller-dev.gnometrading.group",

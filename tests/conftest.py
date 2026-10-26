@@ -61,7 +61,7 @@ class FakeSlack:
         return ts
 
     def update(self, channel, ts, text, blocks=None):
-        self.updates.append({"channel": channel, "ts": ts, "text": text})
+        self.updates.append({"channel": channel, "ts": ts, "text": text, **({"blocks": blocks} if blocks else {})})
 
     def thread_messages(self, channel, thread_ts, limit):
         return self.threads.get((channel, thread_ts), [])[:limit]
