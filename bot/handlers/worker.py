@@ -87,6 +87,14 @@ def answer_question(message: dict, store: Store) -> None:
     try:
         question = build_question(channel, thread_ts, message["ts"], message["bot_user_id"], {placeholder})
         answer = agent.run(cfg, "qa", question, READ_TOOLS)
+    except slack.SlackError as error:
+        # It can post anywhere (chat:write.public) but only reads channels it's a member of.
+        if "not_in_channel" not in str(error):
+            logger.exception("Couldn't answer %s/%s", channel, message["ts"])
+            slack.update(channel, placeholder, "Something went wrong answering that; it's in my logs.")
+            return
+        slack.update(channel, placeholder, "I can't read this channel's messages yet; invite me with `/invite @Gnome Bot`.")
+        return
     except llm.ModelUnavailable as error:
         slack.update(channel, placeholder, "I can't reach my model right now (out of credit or down); try again later.")
         alerts.once_a_day(store, "model-unavailable", "Gnome Bot can't reach its model", str(error)[:1000])

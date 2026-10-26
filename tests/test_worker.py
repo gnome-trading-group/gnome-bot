@@ -1,6 +1,6 @@
 import pytest
 
-from bot import agent, alerts, llm
+from bot import agent, alerts, llm, slack
 from bot.handlers import worker
 from tests.conftest import BOT_USER
 
@@ -74,6 +74,14 @@ def test_answers_an_unexpected_failure_instead_of_raising_into_a_retry(store, fa
     monkeypatch.setattr(agent, "run", lambda *a: 1 / 0)
     worker.answer_question(question(), store)
     assert "went wrong" in fake_slack.updates[0]["text"]
+
+
+def test_asks_to_be_invited_when_it_cant_read_the_channel(store, fake_slack, config_with, monkeypatch):
+    def not_a_member(*args, **kwargs):
+        raise slack.SlackError("Slack API error (conversations.replies): not_in_channel")
+    monkeypatch.setattr(slack, "thread_messages", not_a_member)
+    worker.answer_question(question(), store)
+    assert "/invite @Gnome Bot" in fake_slack.updates[0]["text"]
 
 
 def test_the_question_carries_the_thread_with_names_and_without_placeholders(fake_slack):
