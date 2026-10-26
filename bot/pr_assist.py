@@ -1,9 +1,9 @@
-"""`@gnome-bot` in a pull request comment, anywhere in the org: an org member asks for a change to the PR or a
+"""`@gnome-trading-bot` in a pull request comment, anywhere in the org: an org member asks for a change to the PR or a
 question about it, and gnome-bot's `pr-assist.yml` workflow has Claude Code answer on the PR and, if it made changes,
 push them to the PR's branch.
 
 The GitHub App's webhook delivers every PR comment (conversation and inline review comments) to /github/webhook,
-signed with the App's webhook secret. Only comments that mention `@gnome-bot`, by an org member (the payload's
+signed with the App's webhook secret. Only comments that mention it (`TRIGGER`), by an org member (the payload's
 `author_association`, so the App needs no members permission), from a person rather than a bot, start anything.
 
 What the person sees, all on the PR: a reaction on their comment at once, then one reply comment that starts as a
@@ -22,7 +22,9 @@ from bot.store import Store
 logger = logging.getLogger(__name__)
 
 PR_WORKFLOW = "pr-assist.yml"
-TRIGGER = re.compile(r"(?<![\w-])@gnome-bot\b", re.IGNORECASE)
+# The App's own name (its bot user is gnome-trading-bot[bot]), which GitHub offers in mention autocomplete once the
+# App has commented on a PR. `@gnome-bot` also works, though GitHub links it to an unrelated org of that name.
+TRIGGER = re.compile(r"(?<![\w-])@(gnome-trading-bot(\[bot\])?|gnome-bot)(?![\w-])", re.IGNORECASE)
 ORG_MEMBERS = {"OWNER", "MEMBER"}
 # GitHub caps a dispatch's inputs at 65,535 characters in all.
 MAX_COMMENT_CHARS = 20_000

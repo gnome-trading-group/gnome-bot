@@ -1,4 +1,4 @@
-# Started by gnome-bot (bot/pr_assist.py) when an org member mentions @gnome-bot in a pull request comment anywhere in
+# Started by gnome-bot (bot/pr_assist.py) when an org member mentions @gnome-trading-bot in a pull request comment anywhere in
 # the org. Claude Code works on the PR's branch, cloned under work/<repo>: it answers the comment and, if asked for a
 # change, makes it and commits. The step after it pushes those commits to the PR branch (never force) and edits the
 # placeholder reply gnome-bot posted ("Working on it…") into the answer, so each request gets one reply comment.
@@ -19,7 +19,7 @@ on:
         description: The pull request number
         required: true
       comment:
-        description: The comment that mentioned @gnome-bot
+        description: The comment that mentioned @gnome-trading-bot
         required: true
       comment_url:
         description: Link to that comment

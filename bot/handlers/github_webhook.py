@@ -3,6 +3,7 @@ gives a delivery 10 seconds, so this only checks it and queues the ones gnome-bo
 import base64
 import json
 import logging
+from urllib.parse import parse_qs
 
 import boto3
 
@@ -14,6 +15,14 @@ logger.setLevel(logging.INFO)
 _sqs = None
 
 
+def _payload(body: str, content_type: str) -> dict:
+    """The delivery's JSON: the body itself, or its `payload` field when the App's webhook is set to form encoding
+    (GitHub's default). The signature covers the raw body either way."""
+    if content_type.startswith("application/x-www-form-urlencoded"):
+        return json.loads(parse_qs(body)["payload"][0])
+    return json.loads(body)
+
+
 def handler(event, context):
     global _sqs
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
@@ -22,7 +31,11 @@ def handler(event, context):
         body = base64.b64decode(body).decode()
     if not pr_assist.verify_signature(body, headers.get("x-hub-signature-256", "")):
         return {"statusCode": 401, "body": "invalid signature"}
-    request = pr_assist.request_from(headers.get("x-github-event", ""), json.loads(body))
+    try:
+        payload = _payload(body, headers.get("content-type", ""))
+    except (ValueError, KeyError, IndexError):
+        return {"statusCode": 400, "body": "unreadable payload"}
+    request = pr_assist.request_from(headers.get("x-github-event", ""), payload)
     if request:
         _sqs = _sqs or boto3.client("sqs", region_name=config.REGION)
         _sqs.send_message(QueueUrl=config.WORK_QUEUE_URL, MessageBody=json.dumps(request))

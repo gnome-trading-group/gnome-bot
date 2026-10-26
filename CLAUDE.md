@@ -3,7 +3,7 @@
 Gnome Bot is the firm's Slack ops agent. It answers questions about trading and the system (PnL, sessions, alerts,
 deploys, how a service works) with read-only tools, triages alerts in their Slack threads as the registry posts them,
 and on request starts a GitHub workflow where Claude Code opens draft PRs for a fix. Org members can also mention
-`@gnome-bot` in any PR comment to have it answer or push a change to that PR. It never writes code or pushes itself.
+`@gnome-trading-bot` (the GitHub App; `@gnome-bot` works too) in any PR comment to have it answer or push a change to that PR. It never writes code or pushes itself.
 
 ## Commands
 
@@ -36,9 +36,10 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
   launcher, which owns the Slack app's Interactivity URL) or "fix this" in the thread dispatches
   `.github/workflows/fix.yml`; the run reports to `POST /github/callback` with a GitHub OIDC token, checked against
   GitHub's keys, `fix.yml` on main and the run id.
-- `bot/pr_assist.py` + `bot/handlers/github_webhook.py` + `.github/workflows/pr-assist.yml`: `@gnome-bot` on PRs.
+- `bot/pr_assist.py` + `bot/handlers/github_webhook.py` + `.github/workflows/pr-assist.yml`: `@gnome-trading-bot` on
+  PRs (`pr_assist.TRIGGER`; `@gnome-bot` also matches, though GitHub links that name to an unrelated org).
   The App's webhook (`POST /github/webhook`, signed with `gnome-bot/github-webhook-secret`) delivers PR comments; only
-  `@gnome-bot` mentions by org members (`author_association` OWNER/MEMBER) from people, not bots, are queued. The
+  `@gnome-trading-bot` mentions by org members (`author_association` OWNER/MEMBER) from people, not bots, are queued. The
   worker reacts with :eyes:, posts a "Working on it… (run)" reply and starts `pr-assist.yml`, which runs Claude Code
   on the PR branch, pushes its commits there (never force; forks refused) and edits that reply into the answer. If
   the run dies first, the callback marks the reply failed. A request that won't run (fixes off, a run already going
@@ -106,4 +107,4 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
   buttons only work in prod.
 - GitHub App webhook (App settings → Webhook): URL = prod `GithubWebhookUrl` output, secret = the value of
   `gnome-bot/github-webhook-secret` in prod, events "Issue comment" and "Pull request review comment". One webhook per
-  App, so `@gnome-bot` on PRs is prod only.
+  App, so `@gnome-trading-bot` on PRs is prod only.

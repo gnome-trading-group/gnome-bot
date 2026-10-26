@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from urllib.parse import urlencode
 
 import boto3
 import pytest
@@ -61,10 +62,40 @@ def test_queues_an_org_members_mention_on_a_pr(secret, queue):
         "comment_id": "501", "review_comment": False, "requested_by": "mprey"}]
 
 
+@pytest.mark.parametrize("body", [
+    "@gnome-trading-bot handle the null case", "@gnome-trading-bot[bot] handle it", "thoughts, @Gnome-Bot?",
+])
+def test_answers_to_the_apps_name_and_the_short_name(secret, queue, body):
+    github_webhook.handler(delivery(*comment_event(body=body)), None)
+    assert queued(queue)[0]["comment"] == body
+
+
 def test_queues_an_inline_review_comment_too(secret, queue):
     github_webhook.handler(delivery(*comment_event(event="pull_request_review_comment")), None)
     message = queued(queue)[0]
     assert message["pr_number"] == "7" and message["review_comment"] is True
+
+
+def test_reads_a_form_encoded_delivery_githubs_default(secret, queue):
+    event, payload = comment_event()
+    body = urlencode({"payload": json.dumps(payload)})
+    signature = "sha256=" + hmac.new(WEBHOOK_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
+    response = github_webhook.handler({"headers": {"X-GitHub-Event": event, "X-Hub-Signature-256": signature,
+                                                   "Content-Type": "application/x-www-form-urlencoded"},
+                                       "body": body}, None)
+    assert response["statusCode"] == 202 and queued(queue)[0]["pr_number"] == "7"
+
+
+def test_a_signed_delivery_it_cant_read_is_a_400_not_a_crash(secret, queue):
+    body = "not json"
+    signature = "sha256=" + hmac.new(WEBHOOK_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()
+    assert github_webhook.handler({"headers": {"X-GitHub-Event": "ping", "X-Hub-Signature-256": signature},
+                                   "body": body}, None)["statusCode"] == 400
+
+
+def test_a_ping_is_accepted_and_ignored(secret, queue):
+    assert github_webhook.handler(delivery("ping", {"zen": "Keep it logically awesome.", "hook_id": 1}), None)["statusCode"] == 202
+    assert queued(queue) == []
 
 
 def test_refuses_a_delivery_github_didnt_sign(secret, queue):
@@ -78,6 +109,7 @@ def test_refuses_a_delivery_github_didnt_sign(secret, queue):
     {"sender_type": "Bot"},
     {"body": "looks good, thanks"},
     {"body": "email me at mason@gnome-bot.dev"},
+    {"body": "see @gnome-trading-botanist"},
     {"pull_request": False},
     {"owner": "someone-else"},
     {"action": "edited"},

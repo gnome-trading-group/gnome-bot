@@ -22,7 +22,7 @@ FIX_WORKFLOW = "fix.yml"
 FIX_ACTION_ID = "bot_fix"
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_AUDIENCE = "gnome-bot-callback"
-# The workflows allowed to report to the callback: fix PRs from Slack, and @gnome-bot on a PR.
+# The workflows allowed to report to the callback: fix PRs from Slack, and @gnome-trading-bot on a PR.
 REPORTING_WORKFLOW_REFS = {f"{config.GITHUB_ORG}/{github.BOT_REPO}/.github/workflows/{name}@refs/heads/main"
                            for name in (FIX_WORKFLOW, "pr-assist.yml")}
 # GitHub caps a dispatch's inputs at 65,535 characters in all; the task is the only long one.
