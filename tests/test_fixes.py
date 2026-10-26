@@ -173,7 +173,7 @@ def github_keys(monkeypatch):
 def run_token(**claims) -> str:
     now = int(time.time())
     return jwt.encode({"iss": fixes.OIDC_ISSUER, "aud": fixes.OIDC_AUDIENCE, "iat": now, "exp": now + 300,
-                       "job_workflow_ref": fixes.FIX_WORKFLOW_REF, "run_id": "77", **claims}, KEY, algorithm="RS256")
+                       "job_workflow_ref": sorted(fixes.REPORTING_WORKFLOW_REFS)[0], "run_id": "77", **claims}, KEY, algorithm="RS256")
 
 
 def callback(token: str, body: dict) -> dict:

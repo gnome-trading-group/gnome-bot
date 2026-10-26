@@ -5,7 +5,7 @@ import logging
 
 import jwt
 
-from bot import fixes
+from bot import fixes, pr_assist
 from bot.store import Store
 
 logger = logging.getLogger(__name__)
@@ -34,11 +34,16 @@ def handler(event, context):
     except jwt.PyJWTError as error:
         logger.warning("Refused a fix callback: %s", error)
         return _response(403, "not a gnome-bot fix run")
+    _store = _store or Store()
+    # A pr-assist run replied on its PR itself and names the PR; a fix run names the Slack thread to report in.
+    if result.get("pr_number") and result.get("repo"):
+        pr_assist.report_result(result, _store)
+        logger.info("pr-assist run %s on %s#%s finished", result["run_id"], result["repo"], result["pr_number"])
+        return _response(200, "released")
     if result.get("status") not in STATUSES or not result.get("channel") or not result.get("thread_ts"):
         return _response(400, f"status must be one of {sorted(STATUSES)}, with channel and thread_ts")
     if not isinstance(result.get("prs", []), list):
         return _response(400, "prs must be a list of {repo, url, title}")
-    _store = _store or Store()
     fixes.report_result(result, _store)
     logger.info("Fix run %s for %s/%s: %s", result["run_id"], result["channel"], result["thread_ts"], result["status"])
     return _response(200, "reported")

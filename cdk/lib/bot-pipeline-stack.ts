@@ -19,6 +19,7 @@ class AppStage extends cdk.Stage {
       workerLogGroup: botStack.workerLogGroup,
       interactFn: botStack.interactFn,
       callbackFn: botStack.callbackFn,
+      webhookFn: botStack.webhookFn,
       queue: botStack.queue,
       dlq: botStack.dlq,
     });

@@ -14,15 +14,22 @@ describe('BotStack', () => {
   const monitoring = new BotMonitoringStack(scope, 'BotMonitoring', {
     env: GnomeAccount.InfraDev.environment,
     ingressFn: stack.ingressFn, workerFn: stack.workerFn, workerLogGroup: stack.workerLogGroup, queue: stack.queue,
-    dlq: stack.dlq, interactFn: stack.interactFn, callbackFn: stack.callbackFn,
+    dlq: stack.dlq, interactFn: stack.interactFn, callbackFn: stack.callbackFn, webhookFn: stack.webhookFn,
   });
   const template = Template.fromStack(stack);
 
-  it('takes Slack events and fix-run callbacks, each on one public POST route', () => {
+  it('takes Slack events, fix-run callbacks and the GitHub webhook, each on one public POST route', () => {
     const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).map((m) => m.Properties.HttpMethod);
-    expect(methods).toEqual(['POST', 'POST']);
+    expect(methods).toEqual(['POST', 'POST', 'POST']);
     expect(Object.values(template.findResources('AWS::ApiGateway::Resource')).map((r) => r.Properties.PathPart).sort())
-      .toEqual(['callback', 'events', 'github', 'slack']);
+      .toEqual(['callback', 'events', 'github', 'slack', 'webhook']);
+  });
+
+  it('generates the webhook secret GitHub signs deliveries with', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'gnome-bot/github-webhook-secret',
+      GenerateSecretString: Match.objectLike({ PasswordLength: 48 }),
+    });
   });
 
   it('names the interact function so the launcher can invoke it without an import', () => {
@@ -32,7 +39,7 @@ describe('BotStack', () => {
   it('tells the functions where fix runs report back', () => {
     const fns = Object.values(template.findResources('AWS::Lambda::Function'))
       .filter((f: any) => f.Properties.Environment?.Variables?.CALLBACK_URL);
-    expect(fns.length).toBe(4);
+    expect(fns.length).toBe(5);
     expect(JSON.stringify(fns[0].Properties.Environment.Variables.CALLBACK_URL)).toContain('/api/github/callback');
   });
 
@@ -86,7 +93,8 @@ describe('BotStack', () => {
       .map((a) => a.Properties.AlarmName).sort();
     expect(names).toEqual(['Bot--Answers-AnswerFailures-Warning', 'Bot--SlackEvents-Fault-Count-Warning',
       'Bot--WorkQueue-DLQ-Queue-Message-Count-Max-Warning', 'Bot--WorkQueue-Queue-Message-Age-Max-Warning',
-      'Bot--Worker-Fault-Count-Warning', 'Bot--Interact-Fault-Count-Warning', 'Bot--GithubCallback-Fault-Count-Warning'].sort());
+      'Bot--Worker-Fault-Count-Warning', 'Bot--Interact-Fault-Count-Warning', 'Bot--GithubCallback-Fault-Count-Warning',
+      'Bot--GithubWebhook-Fault-Count-Warning'].sort());
   });
 });
 

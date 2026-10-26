@@ -2,8 +2,8 @@
 
 Gnome Bot is the firm's Slack ops agent. It answers questions about trading and the system (PnL, sessions, alerts,
 deploys, how a service works) with read-only tools, triages alerts in their Slack threads as the registry posts them,
-and on request starts a GitHub workflow where Claude Code opens a draft PR for a fix. It never writes code or pushes
-itself.
+and on request starts a GitHub workflow where Claude Code opens draft PRs for a fix. Org members can also mention
+`@gnome-bot` in any PR comment to have it answer or push a change to that PR. It never writes code or pushes itself.
 
 ## Commands
 
@@ -36,6 +36,13 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
   launcher, which owns the Slack app's Interactivity URL) or "fix this" in the thread dispatches
   `.github/workflows/fix.yml`; the run reports to `POST /github/callback` with a GitHub OIDC token, checked against
   GitHub's keys, `fix.yml` on main and the run id.
+- `bot/pr_assist.py` + `bot/handlers/github_webhook.py` + `.github/workflows/pr-assist.yml`: `@gnome-bot` on PRs.
+  The App's webhook (`POST /github/webhook`, signed with `gnome-bot/github-webhook-secret`) delivers PR comments; only
+  `@gnome-bot` mentions by org members (`author_association` OWNER/MEMBER) from people, not bots, are queued. The
+  worker reacts with :eyes:, posts a "Working on it… (run)" reply and starts `pr-assist.yml`, which runs Claude Code
+  on the PR branch, pushes its commits there (never force; forks refused) and edits that reply into the answer. If
+  the run dies first, the callback marks the reply failed. A request that won't run (fixes off, a run already going
+  on that PR, the daily cap) gets the reason as the reply. Same caps as fixes: one run per PR, `max_fixes_per_day`.
 - `.github/workflows/fix.yml`: clones each target repo under `work/<repo>` (remotes without credentials), runs one
   claude-code-action session across them (edit, build, test, commit; its token can only read gnome-bot), then a
   separate step pushes `bot/fix-<run_id>` to each repo with commits and opens cross-linked draft PRs in merge order.
@@ -88,6 +95,7 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
   `Bot--WorkQueue-DLQ-Queue-Message-Count-Max-Warning` (a work item died twice),
   `Bot--WorkQueue-Queue-Message-Age-Max-Warning` (over 10 min old), `Bot--SlackEvents-Fault-Count-Warning`,
   `Bot--Worker-Fault-Count-Warning`, `Bot--Interact-Fault-Count-Warning`, `Bot--GithubCallback-Fault-Count-Warning`,
+  `Bot--GithubWebhook-Fault-Count-Warning`,
   `Bot--Answers-AnswerFailures-Warning` (the worker logged "Couldn't answer" 3+ times in 5 min). Runbook: gnome-registry
   `docs/runbooks/cloudwatch/Bot.md`. Check the worker's logs (log group
   `<Stage>-BotStack-WorkerLogs...`, kept a month; the ingress logs to `/aws/lambda/<Stage>-BotStack-SlackEvents...`).
@@ -96,3 +104,6 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
 - Slack: one app (Gnome Bot). Its Event Subscriptions URL points at the prod `SlackEventsUrl` output, so only prod
   hears Slack. Interactivity stays on the launcher, which forwards `bot_*` button clicks to `gnome-bot-interact`, so
   buttons only work in prod.
+- GitHub App webhook (App settings → Webhook): URL = prod `GithubWebhookUrl` output, secret = the value of
+  `gnome-bot/github-webhook-secret` in prod, events "Issue comment" and "Pull request review comment". One webhook per
+  App, so `@gnome-bot` on PRs is prod only.

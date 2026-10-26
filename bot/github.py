@@ -68,6 +68,29 @@ def dispatch_workflow(workflow: str, inputs: dict[str, str]) -> str:
     return details.get("html_url") or f"https://github.com/{config.GITHUB_ORG}/{BOT_REPO}/actions/workflows/{workflow}"
 
 
+def _send(method: str, path: str, body: dict) -> dict:
+    headers = {**HEADERS, "Authorization": f"token {installation_token()}"}
+    response = requests.request(method, f"{API}{path}", headers=headers, json=body, timeout=15)
+    if response.status_code >= 400:
+        raise GitHubError(response.status_code, response.text[:300])
+    return response.json() if response.content else {}
+
+
+def react_to_comment(repo: str, comment_id: str, review_comment: bool, content: str = "eyes") -> None:
+    """A reaction on a PR comment: one in the conversation, or an inline review comment."""
+    kind = "pulls" if review_comment else "issues"
+    _send("POST", f"/repos/{config.GITHUB_ORG}/{repo}/{kind}/comments/{comment_id}/reactions", {"content": content})
+
+
+def comment_on_pr(repo: str, pr_number: str, body: str) -> str:
+    """Posts a comment in a PR's conversation; returns its id."""
+    return str(_send("POST", f"/repos/{config.GITHUB_ORG}/{repo}/issues/{pr_number}/comments", {"body": body})["id"])
+
+
+def edit_pr_comment(repo: str, comment_id: str, body: str) -> None:
+    _send("PATCH", f"/repos/{config.GITHUB_ORG}/{repo}/issues/comments/{comment_id}", {"body": body})
+
+
 def read_file(repo: str, path: str) -> str:
     """A file's text from the repo's default branch."""
     data = _get(f"/repos/{config.GITHUB_ORG}/{repo}/contents/{path}")

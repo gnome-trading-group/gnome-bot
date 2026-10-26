@@ -22,7 +22,9 @@ FIX_WORKFLOW = "fix.yml"
 FIX_ACTION_ID = "bot_fix"
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_AUDIENCE = "gnome-bot-callback"
-FIX_WORKFLOW_REF = f"{config.GITHUB_ORG}/{github.BOT_REPO}/.github/workflows/{FIX_WORKFLOW}@refs/heads/main"
+# The workflows allowed to report to the callback: fix PRs from Slack, and @gnome-bot on a PR.
+REPORTING_WORKFLOW_REFS = {f"{config.GITHUB_ORG}/{github.BOT_REPO}/.github/workflows/{name}@refs/heads/main"
+                           for name in (FIX_WORKFLOW, "pr-assist.yml")}
 # GitHub caps a dispatch's inputs at 65,535 characters in all; the task is the only long one.
 MAX_TASK_CHARS = 30_000
 # One session sees every repo a fix touches; more than this is a redesign, not a fix.
@@ -110,13 +112,14 @@ def request_fix(cfg: BotConfig, store: Store, channel: str, thread_ts: str, user
 
 
 def verify_run_token(token: str, run_id: str) -> dict:
-    """The claims of a GitHub OIDC token from gnome-bot's fix workflow on main, for this run; raises otherwise."""
+    """The claims of a GitHub OIDC token from one of gnome-bot's reporting workflows on main, for this run; raises
+    otherwise."""
     global _jwks
     _jwks = _jwks or jwt.PyJWKClient(f"{OIDC_ISSUER}/.well-known/jwks")
     key = _jwks.get_signing_key_from_jwt(token)
     claims = jwt.decode(token, key.key, algorithms=["RS256"], audience=OIDC_AUDIENCE, issuer=OIDC_ISSUER)
-    if claims.get("job_workflow_ref") != FIX_WORKFLOW_REF:
-        raise jwt.InvalidTokenError(f"not the fix workflow on main: {claims.get('job_workflow_ref')}")
+    if claims.get("job_workflow_ref") not in REPORTING_WORKFLOW_REFS:
+        raise jwt.InvalidTokenError(f"not a gnome-bot workflow on main: {claims.get('job_workflow_ref')}")
     if str(claims.get("run_id")) != str(run_id):
         raise jwt.InvalidTokenError("token is for another run")
     return claims

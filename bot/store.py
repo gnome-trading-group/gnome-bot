@@ -104,6 +104,9 @@ class Store:
 
     def claim_fix_slot(self, daily_cap: int) -> bool:
         """Counts a fix against today's cap; False, and nothing counted, once the cap is reached."""
+        # The condition below lets the day's first fix through whatever the cap, since its counter doesn't exist yet.
+        if daily_cap <= 0:
+            return False
         try:
             self._table.update_item(
                 Key={"pk": f"FIXES#{_today()}"},

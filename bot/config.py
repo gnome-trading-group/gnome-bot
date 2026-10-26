@@ -11,6 +11,7 @@ SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "slack-signing-sec
 COGNITO_CLIENT_SECRET = os.environ.get("COGNITO_CLIENT_SECRET", "gnome-bot/cognito-client")
 ANTHROPIC_API_KEY_SECRET = os.environ.get("ANTHROPIC_API_KEY_SECRET", "gnome-bot/anthropic-api-key")
 GITHUB_APP_SECRET = os.environ.get("GITHUB_APP_SECRET", "gnome-bot/github-app-private-key")
+GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "gnome-bot/github-webhook-secret")
 
 REGISTRY_API_URL = os.environ.get("REGISTRY_API_URL", "")
 CONTROLLER_API_URL = os.environ.get("CONTROLLER_API_URL", "")

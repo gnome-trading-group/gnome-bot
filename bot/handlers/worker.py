@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Callable
 
-from bot import agent, alerts, config, fixes, llm, slack
+from bot import agent, alerts, config, fixes, llm, pr_assist, slack
 from bot.runtime_config import BotConfig, runtime_config
 from bot.store import Store
 from bot.tools import READ_TOOLS
@@ -229,5 +229,7 @@ def handler(event, context):
             triage_alert(message["detail"], _store)
         elif message.get("kind") == "question":
             answer_question(message, _store)
+        elif message.get("kind") == "pr_comment":
+            pr_assist.handle(runtime_config.config, _store, message)
         else:
             logger.warning("Ignoring unknown work item %s", message.get("kind") or message.get("detail-type"))

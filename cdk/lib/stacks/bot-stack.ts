@@ -9,6 +9,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { join } from 'path';
 import { GnomeAccount, Stage } from '@gnome-trading-group/gnome-shared-cdk';
@@ -27,6 +28,7 @@ export class BotStack extends cdk.Stack {
   public readonly workerLogGroup: logs.LogGroup;
   public readonly interactFn: lambda.DockerImageFunction;
   public readonly callbackFn: lambda.DockerImageFunction;
+  public readonly webhookFn: lambda.DockerImageFunction;
   public readonly queue: sqs.Queue;
   public readonly dlq: sqs.Queue;
 
@@ -182,9 +184,31 @@ export class BotStack extends cdk.Stack {
     table.grantReadWriteData(this.callbackFn);
     this.callbackFn.addToRolePolicy(botSecrets);
 
+    // The GitHub App's webhook (PR comments mentioning @gnome-bot). GitHub signs each delivery with this secret, which
+    // is pasted into the App's settings along with the URL; only prod's is configured, since an App has one webhook.
+    const webhookSecret = new secretsmanager.Secret(this, 'GithubWebhookSecret', {
+      secretName: 'gnome-bot/github-webhook-secret',
+      description: "Secret the gnome-trading-bot GitHub App signs its webhook deliveries with",
+      generateSecretString: { passwordLength: 48, excludePunctuation: true },
+    });
+    this.webhookFn = new lambda.DockerImageFunction(this, 'GithubWebhook', {
+      code: image('bot.handlers.github_webhook.handler'),
+      // GitHub gives a delivery 10 seconds.
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 512,
+      environment,
+    });
+    webhookSecret.grantRead(this.webhookFn);
+    this.queue.grantSendMessages(this.webhookFn);
+
     api.root.resourceForPath('slack/events').addMethod('POST', new apigateway.LambdaIntegration(this.ingressFn));
+    api.root.resourceForPath('github/webhook').addMethod('POST', new apigateway.LambdaIntegration(this.webhookFn));
     api.root.resourceForPath('github/callback').addMethod('POST', new apigateway.LambdaIntegration(this.callbackFn));
 
+    new cdk.CfnOutput(this, 'GithubWebhookUrl', {
+      value: `${api.url}github/webhook`,
+      description: "The gnome-trading-bot GitHub App's Webhook URL (prod), with the secret gnome-bot/github-webhook-secret",
+    });
     new cdk.CfnOutput(this, 'SlackEventsUrl', {
       value: `${api.url}slack/events`,
       description: "Set this as the Event Subscriptions Request URL in the Gnome Bot Slack app",
