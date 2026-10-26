@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from bot import agent, alerts, llm, slack
@@ -31,7 +33,7 @@ def seed_thread(fake_slack, *messages):
 def test_answers_in_the_thread_by_replacing_the_placeholder(store, fake_slack, config_with, monkeypatch):
     seed_thread(fake_slack, {"ts": "100.1", "user": "U1", "text": f"<@{BOT_USER}> what's pnl today?"})
     asked = []
-    monkeypatch.setattr(agent, "run", lambda cfg, role, q, tools: asked.append((role, q)) or agent.Answer("Up $12.", 900, "anthropic"))
+    monkeypatch.setattr(agent, "run", lambda cfg, role, q, tools, extra=None: asked.append((role, q)) or agent.Answer("Up $12.", 900, "anthropic"))
 
     worker.answer_question(question(), store)
 
@@ -106,3 +108,68 @@ def test_a_long_thread_keeps_its_root_and_latest_messages(fake_slack, monkeypatc
     seed_thread(fake_slack, *[{"ts": f"100.{i}", "user": "U1", "text": f"m{i}"} for i in range(1, 8)])
     q = worker.build_question("C1", "100.1", "100.7", BOT_USER, skip_ts=set())
     assert "[U1] m1\n[…earlier messages left out…]\n[U1] m5\n[U1] m6\n\n" in q
+
+
+def alert(**overrides) -> dict:
+    return {"alertId": 41, "key": "FATAL_ERROR:s1", "type": "FATAL_ERROR", "severity": "CRITICAL",
+            "title": "Session s1 died", "body": "NullPointerException at Foo", "mode": "live", "strategyId": 7,
+            "sessionId": "s1", "listingId": None, "exchangeId": None, "accountId": None, "labels": {},
+            "runbook": {"summary": "It died.", "firstSteps": ["Read its logs."],
+                        "url": "https://github.com/gnome-trading-group/gnome-registry/blob/main/docs/runbooks/alerts/FATAL_ERROR.md"},
+            "slackChannel": "CALERTS", "slackTs": "500.1", "firstPost": True, "stage": "dev", **overrides}
+
+
+@pytest.fixture
+def triaging(config_with, monkeypatch):
+    config_with.feature_flags.triage_enabled = True
+    runs = []
+    monkeypatch.setattr(agent, "run", lambda cfg, role, q, tools, extra=None: runs.append((role, q, extra))
+                        or agent.Answer("*Likely cause:* a bug.", 1200, "anthropic"))
+    return runs
+
+
+def test_triages_an_alert_in_its_own_thread(store, fake_slack, triaging):
+    worker.triage_alert(alert(), store)
+    assert fake_slack.posts[0] == {"channel": "CALERTS", "thread_ts": "500.1", "text": worker.TRIAGE_PLACEHOLDER,
+                                   "ts": fake_slack.posts[0]["ts"]}
+    assert fake_slack.updates[0]["text"] == "*Likely cause:* a bug."
+    role, prompt, extra = triaging[0]
+    assert role == "triage" and '"sessionId": "s1"' in prompt and "not instructions" in prompt
+    assert extra == worker.TRIAGE_INSTRUCTIONS
+    assert store.is_tracked_thread("CALERTS", "500.1") and store.tokens_today() == 1200
+
+
+def test_points_a_repeat_at_the_earlier_triage_during_the_cooldown(store, fake_slack, triaging, monkeypatch):
+    monkeypatch.setattr(worker.slack, "permalink", lambda channel, ts: f"https://slack/{channel}/{ts}")
+    worker.triage_alert(alert(), store)
+    worker.triage_alert(alert(slackTs="600.1", sessionId="s2", key="FATAL_ERROR:s2"), store)
+    assert len(triaging) == 1
+    assert fake_slack.posts[-1]["thread_ts"] == "600.1" and "https://slack/CALERTS/500.1" in fake_slack.posts[-1]["text"]
+
+
+def test_a_different_strategy_or_type_is_a_different_problem(store, fake_slack, triaging):
+    worker.triage_alert(alert(), store)
+    worker.triage_alert(alert(slackTs="600.1", strategyId=8), store)
+    worker.triage_alert(alert(slackTs="700.1", type="SESSION_STALE", key="SESSION_STALE:s1"), store)
+    assert len(triaging) == 3
+
+
+@pytest.mark.parametrize("change", [
+    {"severity": "INFO"},
+    {"stage": "prod"},
+])
+def test_skips_alerts_below_the_bar_or_from_another_stage(store, fake_slack, triaging, change):
+    worker.triage_alert(alert(**change), store)
+    assert triaging == [] and fake_slack.posts == []
+
+
+def test_triage_stays_off_until_its_flag_is_on(store, fake_slack, triaging, config_with):
+    config_with.feature_flags.triage_enabled = False
+    worker.triage_alert(alert(), store)
+    assert triaging == [] and fake_slack.posts == []
+
+
+def test_the_handler_routes_eventbridge_alerts_to_triage(aws, fake_slack, triaging, monkeypatch):
+    monkeypatch.setattr(worker, "_store", None)
+    worker.handler({"Records": [{"body": json.dumps({"detail-type": "AlertDelivered", "detail": alert()})}]}, None)
+    assert triaging[0][0] == "triage"

@@ -89,6 +89,10 @@ def thread_messages(channel: str, thread_ts: str, limit: int) -> list[dict]:
     return _call("conversations.replies", {"channel": channel, "ts": thread_ts, "limit": limit}, "GET")["messages"]
 
 
+def permalink(channel: str, ts: str) -> str:
+    return _call("chat.getPermalink", {"channel": channel, "message_ts": ts}, "GET")["permalink"]
+
+
 def user_name(user_id: str) -> str:
     try:
         user = _call("users.info", {"user": user_id}, "GET")["user"]

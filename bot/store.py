@@ -4,6 +4,7 @@
 - THREAD#<channel>#<ts>       a thread the bot is in, where follow-ups need no @mention (7 days since last reply)
 - USAGE#<yyyy-mm-dd>          tokens spent that UTC day, against the daily budget (3 days)
 - ONCE#<what>#<yyyy-mm-dd>    something done at most once a day, like raising the out-of-credit alert (2 days)
+- TRIAGE#<cooldown key>        where the last triage of this kind of alert was posted, while its cooldown runs
 """
 import time
 from datetime import datetime, timezone
@@ -54,6 +55,17 @@ class Store:
         item = self._table.get_item(Key={"pk": f"THREAD#{channel}#{thread_ts}"}).get("Item")
         # TTL deletion lags by up to a couple of days, so an expired row still on the table doesn't count.
         return bool(item) and int(item["ttl"]) > time.time()
+
+    def recent_triage(self, cooldown_key: str) -> dict | None:
+        """The last triage of this kind of alert, while its cooldown runs: {channel, ts}."""
+        item = self._table.get_item(Key={"pk": f"TRIAGE#{cooldown_key}"}).get("Item")
+        if not item or int(item["ttl"]) <= time.time():
+            return None
+        return {"channel": item["channel"], "ts": item["ts"]}
+
+    def record_triage(self, cooldown_key: str, channel: str, ts: str, cooldown_seconds: int) -> None:
+        self._table.put_item(Item={"pk": f"TRIAGE#{cooldown_key}", "channel": channel, "ts": ts,
+                                   "ttl": int(time.time()) + cooldown_seconds})
 
     def tokens_today(self) -> int:
         item = self._table.get_item(Key={"pk": f"USAGE#{_today()}"}).get("Item")

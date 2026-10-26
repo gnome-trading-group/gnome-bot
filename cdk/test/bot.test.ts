@@ -23,6 +23,16 @@ describe('BotStack', () => {
     expect(methods).toEqual(['POST']);
   });
 
+  it('queues alerts the registry posted to Slack for triage', () => {
+    template.hasResourceProperties('AWS::Events::Rule', {
+      EventBusName: 'gnome-alerts',
+      EventPattern: { source: ['gnome.alerts.delivered'], 'detail-type': ['AlertDelivered'] },
+    });
+    template.hasResourceProperties('AWS::SQS::QueuePolicy', {
+      PolicyDocument: { Statement: [Match.objectLike({ Principal: { Service: 'events.amazonaws.com' } })] },
+    });
+  });
+
   it('gives the worker a fixed role name the pipelines account can trust', () => {
     template.hasResourceProperties('AWS::IAM::Role', { RoleName: 'gnome-bot-worker' });
   });

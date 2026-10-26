@@ -2,6 +2,8 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -43,6 +45,15 @@ export class BotStack extends cdk.Stack {
     this.queue = new sqs.Queue(this, 'WorkQueue', {
       visibilityTimeout: cdk.Duration.minutes(6),
       deadLetterQueue: { queue: this.dlq, maxReceiveCount: 2 },
+    });
+
+    // The registry's alert router announces each firing alert it posts to Slack on its bus; the worker triages it.
+    // The bus is named rather than imported, like every other stack that puts events on it.
+    new events.Rule(this, 'AlertDeliveredRule', {
+      description: 'Alerts posted to Slack go to gnome-bot for triage',
+      eventBus: events.EventBus.fromEventBusName(this, 'AlertBus', 'gnome-alerts'),
+      eventPattern: { source: ['gnome.alerts.delivered'], detailType: ['AlertDelivered'] },
+      targets: [new targets.SqsQueue(this.queue)],
     });
 
     const pipelinesReadRoleArn =
