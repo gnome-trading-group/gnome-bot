@@ -13,7 +13,8 @@ describe('BotStack', () => {
   const stack = new BotStack(scope, 'Bot', { env: GnomeAccount.InfraDev.environment, stage: Stage.DEV });
   const monitoring = new BotMonitoringStack(scope, 'BotMonitoring', {
     env: GnomeAccount.InfraDev.environment,
-    ingressFn: stack.ingressFn, workerFn: stack.workerFn, queue: stack.queue, dlq: stack.dlq,
+    ingressFn: stack.ingressFn, workerFn: stack.workerFn, workerLogGroup: stack.workerLogGroup, queue: stack.queue,
+    dlq: stack.dlq,
   });
   const template = Template.fromStack(stack);
 
@@ -50,6 +51,11 @@ describe('BotStack', () => {
     expect(new Set(writes)).toEqual(new Set([
       'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'sqs:SendMessage', 'sqs:DeleteMessage',
     ]));
+  });
+
+  it('creates the worker log group itself, so the failure filter can attach on the first deploy', () => {
+    template.hasResourceProperties('AWS::Logs::LogGroup', { RetentionInDays: 30 });
+    template.hasResourceProperties('AWS::Lambda::Function', { LoggingConfig: { LogGroup: Match.anyValue() } });
   });
 
   it('builds alarms the alerting stack can read', () => {

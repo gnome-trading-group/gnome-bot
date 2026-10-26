@@ -6,6 +6,7 @@ import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { join } from 'path';
 import { GnomeAccount, Stage } from '@gnome-trading-group/gnome-shared-cdk';
@@ -21,6 +22,7 @@ interface Props extends cdk.StackProps {
 export class BotStack extends cdk.Stack {
   public readonly ingressFn: lambda.DockerImageFunction;
   public readonly workerFn: lambda.DockerImageFunction;
+  public readonly workerLogGroup: logs.LogGroup;
   public readonly queue: sqs.Queue;
   public readonly dlq: sqs.Queue;
 
@@ -84,11 +86,15 @@ export class BotStack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')],
     });
+    // Made here rather than left to Lambda's first invocation, so the monitoring stack's metric filter has a log group
+    // to attach to on the first deploy.
+    this.workerLogGroup = new logs.LogGroup(this, 'WorkerLogs', { retention: logs.RetentionDays.ONE_MONTH });
     this.workerFn = new lambda.DockerImageFunction(this, 'Worker', {
       code: image('bot.handlers.worker.handler'),
       timeout: cdk.Duration.minutes(5),
       memorySize: 1024,
       role: workerRole,
+      logGroup: this.workerLogGroup,
       environment,
     });
     this.workerFn.addEventSource(new lambdaEventSources.SqsEventSource(this.queue, { batchSize: 1 }));

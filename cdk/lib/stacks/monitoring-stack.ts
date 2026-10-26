@@ -8,6 +8,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 interface Props extends cdk.StackProps {
   ingressFn: lambda.IFunction;
   workerFn: lambda.IFunction;
+  workerLogGroup: logs.ILogGroup;
   queue: sqs.IQueue;
   dlq: sqs.IQueue;
 }
@@ -36,7 +37,7 @@ export class BotMonitoringStack extends cdk.Stack {
 
     // The worker answers its own failures in the thread instead of raising, so they only show in its logs.
     const answerFailures = new logs.MetricFilter(this, 'AnswerFailuresFilter', {
-      logGroup: logs.LogGroup.fromLogGroupName(this, 'WorkerLogs', `/aws/lambda/${props.workerFn.functionName}`),
+      logGroup: props.workerLogGroup,
       metricNamespace: 'GnomeBot',
       metricName: 'AnswerFailures',
       filterPattern: logs.FilterPattern.literal('"Couldn\'t answer"'),

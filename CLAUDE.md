@@ -63,8 +63,8 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
 - Service config `bot` (controller, Tools → Service Config): `feature_flags.qa_enabled` turns answering on;
   `provider`, `fallback_provider`, `models.<provider>.<role>`, `limits.daily_token_budget`.
 - Alarms (Warning, no paging): `Bot-Dlq`, `Bot-QueueAge`, `Bot-IngressErrors`, `Bot-WorkerErrors`,
-  `Bot-AnswerFailures` (the worker logged "Couldn't answer"). Check the worker's logs
-  (`/aws/lambda/<Stage>-BotStack-Worker...`).
+  `Bot-AnswerFailures` (the worker logged "Couldn't answer"). Check the worker's logs (log group
+  `<Stage>-BotStack-WorkerLogs...`, kept a month; the ingress logs to `/aws/lambda/<Stage>-BotStack-SlackEvents...`).
 - The bot's own alerts (CUSTOM, WARNING, once a day): `gnome-bot:model-unavailable` (out of Anthropic credit or the
   provider is down; check the Console workspace balance) and `gnome-bot:over-budget`.
 - Slack: one app (Gnome Bot). Its Event Subscriptions URL points at the prod `SlackEventsUrl` output, so only prod

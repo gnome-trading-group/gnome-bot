@@ -16,6 +16,7 @@ class AppStage extends cdk.Stage {
     new BotMonitoringStack(this, 'BotMonitoringStack', {
       ingressFn: botStack.ingressFn,
       workerFn: botStack.workerFn,
+      workerLogGroup: botStack.workerLogGroup,
       queue: botStack.queue,
       dlq: botStack.dlq,
     });
