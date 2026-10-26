@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "gnome-bot"
+version = "0.1.0"
+description = "Gnome Bot: the Slack ops agent (questions, alert triage, fix PRs)"
+packages = [{include = "bot"}]
+
+[tool.poetry.dependencies]
+python = ">=3.13,<3.14"
+# send_alert, for the bot's own alerts (out of model credit, over budget).
+gnomepy = "^3.1.0"
+boto3 = "*"
+requests = "*"
+# bedrock: the provider switch can point any model role at Amazon Bedrock.
+anthropic = {version = "^1.8.0", extras = ["bedrock"]}
+# The GitHub App signs its token requests with an RS256 JWT.
+pyjwt = {version = "^2.9", extras = ["crypto"]}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+moto = {version = "*", extras = ["dynamodb", "sqs", "secretsmanager"]}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

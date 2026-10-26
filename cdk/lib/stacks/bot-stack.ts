@@ -1,0 +1,138 @@
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import { join } from 'path';
+import { GnomeAccount, Stage } from '@gnome-trading-group/gnome-shared-cdk';
+import { PIPELINES_READ_ROLE_NAME, WORKER_ROLE_NAME } from '../config';
+
+interface Props extends cdk.StackProps {
+  stage: Stage;
+}
+
+// Slack events come in through a public API (Slack signs them), wait on a queue, and are answered by the worker,
+// which reads the system through the registry, controller and launcher APIs as the bot's Cognito client, and through
+// read-only AWS calls in its own account and the pipelines account.
+export class BotStack extends cdk.Stack {
+  public readonly ingressFn: lambda.DockerImageFunction;
+  public readonly workerFn: lambda.DockerImageFunction;
+  public readonly queue: sqs.Queue;
+  public readonly dlq: sqs.Queue;
+
+  constructor(scope: Construct, id: string, props: Props) {
+    super(scope, id, props);
+
+    const imageAsset = join(__dirname, '..', '..', '..');
+
+    const table = new dynamodb.Table(this, 'BotTable', {
+      tableName: 'gnome-bot',
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+    });
+
+    this.dlq = new sqs.Queue(this, 'WorkDlq', { retentionPeriod: cdk.Duration.days(14) });
+    // The worker answers failures in the thread rather than raising, so a redelivery means it died outright.
+    this.queue = new sqs.Queue(this, 'WorkQueue', {
+      visibilityTimeout: cdk.Duration.minutes(6),
+      deadLetterQueue: { queue: this.dlq, maxReceiveCount: 2 },
+    });
+
+    const pipelinesReadRoleArn =
+      `arn:aws:iam::${GnomeAccount.InfraPipelines.accountId}:role/${PIPELINES_READ_ROLE_NAME}`;
+    const registryApiKeyId = cdk.Fn.importValue('RegistryApiKeyId');
+
+    const environment = {
+      STAGE: props.stage,
+      BOT_TABLE: table.tableName,
+      WORK_QUEUE_URL: this.queue.queueUrl,
+      REGISTRY_API_URL: cdk.Fn.importValue('RegistryApiUrl'),
+      CONTROLLER_API_URL: cdk.Fn.importValue('ControllerApiUrl'),
+      LAUNCHER_API_URL: cdk.Fn.importValue('LauncherApiUrl'),
+      // For gnomepy's send_alert, which posts the bot's own alerts with the registry's API key.
+      REGISTRY_API_KEY_ID: registryApiKeyId,
+      PIPELINES_READ_ROLE_ARN: pipelinesReadRoleArn,
+    };
+
+    const image = (cmd: string) => lambda.DockerImageCode.fromImageAsset(imageAsset, {
+      cmd: [cmd],
+      // The functions run on x86_64; pinned so an image built on an arm64 machine still runs.
+      platform: Platform.LINUX_AMD64,
+    });
+
+    this.ingressFn = new lambda.DockerImageFunction(this, 'SlackEvents', {
+      code: image('bot.handlers.slack_events.handler'),
+      // Slack retries anything slower than three seconds.
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 512,
+      environment,
+    });
+    table.grantReadWriteData(this.ingressFn);
+    this.queue.grantSendMessages(this.ingressFn);
+    this.ingressFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:slack-signing-secret*`],
+    }));
+
+    const workerRole = new iam.Role(this, 'WorkerRole', {
+      roleName: WORKER_ROLE_NAME,
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')],
+    });
+    this.workerFn = new lambda.DockerImageFunction(this, 'Worker', {
+      code: image('bot.handlers.worker.handler'),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 1024,
+      role: workerRole,
+      environment,
+    });
+    this.workerFn.addEventSource(new lambdaEventSources.SqsEventSource(this.queue, { batchSize: 1 }));
+    table.grantReadWriteData(this.workerFn);
+
+    // Everything below is read-only, apart from the model calls.
+    const statements = [
+      {
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:slack-bot-token*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:gnome-bot/*`,
+        ],
+      },
+      { actions: ['logs:FilterLogEvents', 'logs:DescribeLogGroups'], resources: ['*'] },
+      { actions: ['cloudformation:DescribeStacks', 'cloudformation:DescribeStackEvents'], resources: ['*'] },
+      { actions: ['sts:AssumeRole'], resources: [pipelinesReadRoleArn] },
+      { actions: ['apigateway:GET'], resources: [`arn:aws:apigateway:${this.region}::/apikeys/${registryApiKeyId}`] },
+      {
+        actions: ['ssm:GetParameter'],
+        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/gnome/alerting/api-url`],
+      },
+      // For the `bedrock` provider, switchable in the service config without a deploy.
+      {
+        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+        resources: [
+          'arn:aws:bedrock:*::foundation-model/anthropic.*',
+          `arn:aws:bedrock:*:${this.account}:inference-profile/*anthropic.*`,
+        ],
+      },
+    ];
+    for (const statement of statements) {
+      this.workerFn.addToRolePolicy(new iam.PolicyStatement(statement));
+    }
+
+    const api = new apigateway.RestApi(this, 'BotApi', {
+      restApiName: 'gnome-bot-api',
+      deployOptions: { stageName: 'api' },
+    });
+    api.root.resourceForPath('slack/events').addMethod('POST', new apigateway.LambdaIntegration(this.ingressFn));
+
+    new cdk.CfnOutput(this, 'SlackEventsUrl', {
+      value: `${api.url}slack/events`,
+      description: "Set this as the Event Subscriptions Request URL in the Gnome Bot Slack app",
+    });
+  }
+}
