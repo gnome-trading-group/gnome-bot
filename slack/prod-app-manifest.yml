@@ -1,0 +1,39 @@
+# The Gnome Bot Slack app (prod account), exported from its App Manifest page. Change settings here, then paste this
+# back there. The URLs are prod's BotStack SlackEventsUrl and LauncherSlackInteractionStack SlackInteractionUrl; the
+# scopes are the same as the dev app's (dev-app-manifest.yml says why each is needed).
+display_information:
+  name: Gnome Bot
+  description: Gnome's chat bot
+  background_color: "#17251d"
+features:
+  bot_user:
+    display_name: Gnome Bot
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - chat:write
+      - chat:write.public
+      - app_mentions:read
+      - groups:history
+      - im:history
+      - users:read
+      - users:read.email
+  pkce_enabled: false
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+    request_url: https://pdk3dk0gh1.execute-api.us-east-1.amazonaws.com/api/slack/events
+  interactivity:
+    is_enabled: true
+    request_url: https://18q9yyeadh.execute-api.us-east-1.amazonaws.com/prod/slack/interact
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  is_mcp_enabled: false
+  token_rotation_enabled: false
+  app_level_token_rotation_enabled: false

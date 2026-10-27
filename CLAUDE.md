@@ -53,11 +53,15 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
 - `bot/tools/`: the read-only tools. `trading.py` (registry), `ops.py` (controller health, launcher, CloudWatch
   logs, CloudFormation, pipelines), `aws.py` (`aws_read`: any Describe/List/Get-style AWS call in the stage's account,
   e.g. Cost Explorer, CloudTrail), `docs.py` (GitHub: CLAUDE.md, docs, code search).
-- `bot/memory.py`: team notes. A reply may end with `Remember (<scope>): …`; the worker strips it and offers it with
-  Save/Dismiss buttons (handled in `interact.py`); only a click keeps it (`MEMORY#<id>` in the table). Scope is an
+- `bot/memory.py`: team notes. A reply may end with `Remember (<scope>): …`; the worker strips it and offers it in an
+  editable text box with Save/Dismiss buttons (handled in `interact.py`; Slack sends the box's text with the click, so
+  no modal); only a click keeps it (`MEMORY#<id>` in the table). Scope is an
   alert type or `general`: triage gets its type's notes plus general ones in the prompt, answers get general ones and
   the `team_notes` tool. "forget m-xxxxxx" and "promote m-xxxxxx to <repo>" (a fix run that moves it into that repo's
   docs) are handled in the thread without the model.
+- `bot/handlers/notes.py`: `GET notes`, `PATCH notes/{id}`, `DELETE notes/{id}` for the controller's Tools → Bot Notes
+  page. PERSON only, through the shared `GnomeApiAuthorizer` (the bot API's only authorized routes, and its only CORS
+  ones); edits record the caller's email as `edited_by`.
 - `bot/gnome_api.py`: calls the registry, controller and launcher APIs with the bot's Cognito access token
   (client_credentials, scope `gnome-api/bot.read`).
 - `docs/system/map.md`: the cross-repo map, always in the prompt. Keep it short; detail belongs in each repo's
@@ -108,17 +112,21 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
   `Bot--WorkQueue-DLQ-Queue-Message-Count-Max-Warning` (a work item died twice),
   `Bot--WorkQueue-Queue-Message-Age-Max-Warning` (over 10 min old), `Bot--SlackEvents-Fault-Count-Warning`,
   `Bot--Worker-Fault-Count-Warning`, `Bot--Interact-Fault-Count-Warning`, `Bot--GithubCallback-Fault-Count-Warning`,
-  `Bot--GithubWebhook-Fault-Count-Warning`,
+  `Bot--GithubWebhook-Fault-Count-Warning`, `Bot--Notes-Fault-Count-Warning`,
   `Bot--Answers-AnswerFailures-Warning` (the worker logged "Couldn't answer" 3+ times in 5 min). Runbook: gnome-registry
   `docs/runbooks/cloudwatch/Bot.md`. Check the worker's logs (log group
   `<Stage>-BotStack-WorkerLogs...`, kept a month; the ingress logs to `/aws/lambda/<Stage>-BotStack-SlackEvents...`).
-- Team notes: ask the bot "what do you remember?" (the `team_notes` tool lists them with ids); "forget <id>" in any
-  thread the bot answers deletes one. Saving one beyond 200 is refused.
+- Team notes: the controller's Tools → Bot Notes page lists, edits and deletes them (`BotApiUrl` output = the
+  controller's `VITE_BOT_API_URL`). In Slack, "what do you remember?" lists them and "forget <id>" deletes one. Saving
+  one beyond 200 is refused.
 - The bot's own alerts (CUSTOM, WARNING, once a day): `gnome-bot:model-unavailable` (out of Anthropic credit or the
   provider is down; check the Console workspace balance) and `gnome-bot:over-budget`.
-- Slack: one app (Gnome Bot). Its Event Subscriptions URL points at the prod `SlackEventsUrl` output, so only prod
-  hears Slack. Interactivity stays on the launcher, which forwards `bot_*` button clicks to `gnome-bot-interact`, so
-  buttons only work in prod.
+- Slack: one app per account. Gnome Bot (prod) and Gnome Bot Dev (manifests in `slack/`), each with its token
+  and signing secret in that account's `slack-bot-token` / `slack-signing-secret`, which every service there shares
+  (in dev, the registry's alerts to #gnome-alerts-dev post as Gnome Bot Dev). Each app's Event Subscriptions URL is
+  its stage's `SlackEventsUrl`; Interactivity stays on that stage's launcher (`SlackInteractionUrl`), which forwards
+  `bot_*` button clicks to its account's `gnome-bot-interact`. Secrets are cached per warm Lambda, so a rotated one
+  takes effect on cold starts.
 - GitHub App webhook (App settings → Webhook): URL = prod `GithubWebhookUrl` output, secret = the value of
   `gnome-bot/github-webhook-secret` in prod, events "Issue comment" and "Pull request review comment". One webhook per
   App, so `@gnome-trading-bot` on PRs is prod only.

@@ -1,0 +1,43 @@
+# The Gnome Bot Dev Slack app (dev account). Change settings here, then paste this into the app's App Manifest page
+# (api.slack.com/apps). The URLs are dev's BotStack SlackEventsUrl and LauncherSlackInteractionStack
+# SlackInteractionUrl; the prod app is prod-app-manifest.yml.
+display_information:
+  name: Gnome Bot Dev
+  description: Gnome Trading Group's ops bot (dev)
+  background_color: "#4a5568"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Gnome Bot Dev
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      # Mentions, DMs, and follow-ups in threads it's in (it reads the thread to answer).
+      - app_mentions:read
+      - channels:history
+      - groups:history
+      - im:history
+      # Posting answers, alerts and launch approvals; .public posts where it hasn't been invited.
+      - chat:write
+      - chat:write.public
+      # Names in thread transcripts, and the email a fix or a saved note is attributed to.
+      - users:read
+      - users:read.email
+settings:
+  event_subscriptions:
+    request_url: https://6w53yq29uk.execute-api.us-east-1.amazonaws.com/api/slack/events
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+  interactivity:
+    is_enabled: true
+    request_url: https://cokqmywj4l.execute-api.us-east-1.amazonaws.com/prod/slack/interact
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
