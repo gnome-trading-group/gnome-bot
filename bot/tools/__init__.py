@@ -1,3 +1,3 @@
-from bot.tools import docs, ops, trading
+from bot.tools import aws, docs, ops, trading
 
-READ_TOOLS = [*trading.TOOLS, *ops.TOOLS, *docs.TOOLS]
+READ_TOOLS = [*trading.TOOLS, *ops.TOOLS, *aws.TOOLS, *docs.TOOLS]

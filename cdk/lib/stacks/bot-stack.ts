@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
@@ -11,8 +12,9 @@ import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { join } from 'path';
-import { GnomeAccount, Stage } from '@gnome-trading-group/gnome-shared-cdk';
+import { CallerKind, GnomeAccount, GnomeApiAuthorizer, Stage } from '@gnome-trading-group/gnome-shared-cdk';
 import { PIPELINES_READ_ROLE_NAME, WORKER_ROLE_NAME } from '../config';
 
 interface Props extends cdk.StackProps {
@@ -29,6 +31,7 @@ export class BotStack extends cdk.Stack {
   public readonly interactFn: lambda.DockerImageFunction;
   public readonly callbackFn: lambda.DockerImageFunction;
   public readonly webhookFn: lambda.DockerImageFunction;
+  public readonly notesFn: lambda.DockerImageFunction;
   public readonly queue: sqs.Queue;
   public readonly dlq: sqs.Queue;
 
@@ -108,7 +111,12 @@ export class BotStack extends cdk.Stack {
     const workerRole = new iam.Role(this, 'WorkerRole', {
       roleName: WORKER_ROLE_NAME,
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')],
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+        // The aws_read tool reads anything in the account (cost, CloudTrail, every resource's state), as does
+        // everything else the bot already looks at here: logs, stacks, the API key send_alert uses.
+        iam.ManagedPolicy.fromAwsManagedPolicyName('ReadOnlyAccess'),
+      ],
     });
     // Made here rather than left to Lambda's first invocation, so the monitoring stack's metric filter has a log group
     // to attach to on the first deploy.
@@ -124,23 +132,41 @@ export class BotStack extends cdk.Stack {
     this.workerFn.addEventSource(new lambdaEventSources.SqsEventSource(this.queue, { batchSize: 1 }));
     table.grantReadWriteData(this.workerFn);
 
-    // Everything below is read-only, apart from the model calls.
+    // Whatever the worker reads can end up in a Slack message, so secret values stay closed even if ReadOnlyAccess
+    // grows: only the bot's own secrets and the one parameter it needs, and no direct KMS decrypts.
+    const botSecretArns = [
+      `arn:aws:secretsmanager:${this.region}:${this.account}:secret:slack-bot-token*`,
+      `arn:aws:secretsmanager:${this.region}:${this.account}:secret:gnome-bot/*`,
+    ];
+    const alertingUrlParameter = `arn:aws:ssm:${this.region}:${this.account}:parameter/gnome/alerting/api-url`;
+    const denials = [
+      {
+        effect: iam.Effect.DENY,
+        actions: ['secretsmanager:GetSecretValue', 'secretsmanager:BatchGetSecretValue'],
+        notResources: botSecretArns,
+      },
+      {
+        effect: iam.Effect.DENY,
+        actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath', 'ssm:GetParameterHistory'],
+        notResources: [alertingUrlParameter],
+      },
+      // Services decrypting on the worker's behalf (Secrets Manager for its own secrets) set kms:ViaService.
+      {
+        effect: iam.Effect.DENY,
+        actions: ['kms:Decrypt'],
+        resources: ['*'],
+        conditions: { Null: { 'kms:ViaService': 'true' } },
+      },
+    ];
+    for (const statement of denials) {
+      this.workerFn.addToRolePolicy(new iam.PolicyStatement(statement));
+    }
+
+    // Reads beyond ReadOnlyAccess, and the model calls.
     const statements = [
-      {
-        actions: ['secretsmanager:GetSecretValue'],
-        resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:slack-bot-token*`,
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:gnome-bot/*`,
-        ],
-      },
-      { actions: ['logs:FilterLogEvents', 'logs:DescribeLogGroups'], resources: ['*'] },
-      { actions: ['cloudformation:DescribeStacks', 'cloudformation:DescribeStackEvents'], resources: ['*'] },
+      { actions: ['secretsmanager:GetSecretValue'], resources: botSecretArns },
       { actions: ['sts:AssumeRole'], resources: [pipelinesReadRoleArn] },
-      { actions: ['apigateway:GET'], resources: [`arn:aws:apigateway:${this.region}::/apikeys/${registryApiKeyId}`] },
-      {
-        actions: ['ssm:GetParameter'],
-        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/gnome/alerting/api-url`],
-      },
+      { actions: ['ssm:GetParameter'], resources: [alertingUrlParameter] },
       // For the `bedrock` provider, switchable in the service config without a deploy.
       {
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
@@ -154,13 +180,7 @@ export class BotStack extends cdk.Stack {
       this.workerFn.addToRolePolicy(new iam.PolicyStatement(statement));
     }
 
-    const botSecrets = new iam.PolicyStatement({
-      actions: ['secretsmanager:GetSecretValue'],
-      resources: [
-        `arn:aws:secretsmanager:${this.region}:${this.account}:secret:slack-bot-token*`,
-        `arn:aws:secretsmanager:${this.region}:${this.account}:secret:gnome-bot/*`,
-      ],
-    });
+    const botSecrets = new iam.PolicyStatement({ actions: ['secretsmanager:GetSecretValue'], resources: botSecretArns });
 
     // Gnome Bot's Slack buttons, forwarded by the launcher (which owns the Slack app's one Interactivity URL) as an
     // async invoke. Its name is fixed so the launcher can grant and invoke it without importing anything from here.
@@ -201,6 +221,45 @@ export class BotStack extends cdk.Stack {
     webhookSecret.grantRead(this.webhookFn);
     this.queue.grantSendMessages(this.webhookFn);
 
+    // Team notes for the controller's Tools → Bot Notes page: people only, with their Cognito ID token, through the
+    // same shared authorizer as every other gnome API. The routes are CORS-enabled for the browser; the rest aren't.
+    this.notesFn = new lambda.DockerImageFunction(this, 'Notes', {
+      code: image('bot.handlers.notes.handler'),
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 512,
+      environment,
+    });
+    table.grantReadWriteData(this.notesFn);
+    const userPool = cognito.UserPool.fromUserPoolArn(this, 'OperatorUserPool',
+      ssm.StringParameter.valueForStringParameter(this, '/gnome/cognito/user-pool-arn'));
+    const auth = new GnomeApiAuthorizer(this, 'Authorizer', { userPool });
+    // Without these, a request the authorizer refuses comes back without CORS headers and the browser reports an
+    // opaque CORS failure instead of the auth error.
+    api.addGatewayResponse('Default4xxCors', {
+      type: apigateway.ResponseType.DEFAULT_4XX,
+      responseHeaders: { 'Access-Control-Allow-Origin': "'*'" },
+    });
+    api.addGatewayResponse('Default5xxCors', {
+      type: apigateway.ResponseType.DEFAULT_5XX,
+      responseHeaders: { 'Access-Control-Allow-Origin': "'*'" },
+    });
+    const notes = api.root.addResource('notes', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: ['GET', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowHeaders: apigateway.Cors.DEFAULT_HEADERS,
+      },
+    });
+    const notesIntegration = new apigateway.LambdaIntegration(this.notesFn);
+    const people: apigateway.MethodOptions = {
+      authorizer: auth.authorizerFor([CallerKind.PERSON]),
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
+    };
+    notes.addMethod('GET', notesIntegration, people);
+    const note = notes.addResource('{id}');
+    note.addMethod('PATCH', notesIntegration, people);
+    note.addMethod('DELETE', notesIntegration, people);
+
     api.root.resourceForPath('slack/events').addMethod('POST', new apigateway.LambdaIntegration(this.ingressFn));
     api.root.resourceForPath('github/webhook').addMethod('POST', new apigateway.LambdaIntegration(this.webhookFn));
     api.root.resourceForPath('github/callback').addMethod('POST', new apigateway.LambdaIntegration(this.callbackFn));
@@ -208,6 +267,10 @@ export class BotStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'GithubWebhookUrl', {
       value: `${api.url}github/webhook`,
       description: "The gnome-trading-bot GitHub App's Webhook URL (prod), with the secret gnome-bot/github-webhook-secret",
+    });
+    new cdk.CfnOutput(this, 'BotApiUrl', {
+      value: api.url,
+      description: "The controller's VITE_BOT_API_URL (Tools → Bot Notes)",
     });
     new cdk.CfnOutput(this, 'SlackEventsUrl', {
       value: `${api.url}slack/events`,

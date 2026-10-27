@@ -53,6 +53,8 @@ a session's config names one in `strategy.class`.
 - Classifier worker logs: log groups named `Prod-ClassifierStack-<Worker>Task...`.
 - Firing alarms, queues, scheduled jobs, the database, pipelines and the EC2 fleet: `system_health`.
 - Why a deploy failed: `recent_deploys`, then `stack_status` on the failed stack.
+- Where spend went, who changed what, or any resource's state (instances, queues, buckets, Lambdas): `aws_read`
+  (Cost Explorer `GetCostAndUsage` grouped by SERVICE or USAGE_TYPE; CloudTrail `LookupEvents`; `Describe*`/`List*`).
 
 ## Glossary
 

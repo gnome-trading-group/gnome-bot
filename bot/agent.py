@@ -87,7 +87,7 @@ def _final_text(message, max_turns: int) -> str:
 
 
 def run(cfg: BotConfig, role: str, question: str, tools: list, extra_system: str | None = None) -> Answer:
-    common.output_limit = cfg.limits.max_tool_output_chars
+    common.start_run(cfg.limits.max_tool_output_chars)
     system = system_blocks(extra_system)
 
     def attempt(client, model: str):

@@ -12,6 +12,7 @@ interface Props extends cdk.StackProps {
   interactFn: lambda.IFunction;
   callbackFn: lambda.IFunction;
   webhookFn: lambda.IFunction;
+  notesFn: lambda.IFunction;
   workerLogGroup: logs.ILogGroup;
   queue: sqs.IQueue;
   dlq: sqs.IQueue;
@@ -87,6 +88,14 @@ export class BotMonitoringStack extends cdk.Stack {
         lambdaFunction: props.webhookFn,
         humanReadableName: 'GitHub Webhook',
         alarmFriendlyName: 'GithubWebhook',
+        addFaultCountAlarm: {
+          Warning: { maxErrorCount: 0 },
+        },
+      })
+      .monitorLambdaFunction({
+        lambdaFunction: props.notesFn,
+        humanReadableName: 'Notes API',
+        alarmFriendlyName: 'Notes',
         addFaultCountAlarm: {
           Warning: { maxErrorCount: 0 },
         },

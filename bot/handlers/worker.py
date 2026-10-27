@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Callable
 
-from bot import agent, alerts, config, fixes, llm, pr_assist, slack
+from bot import agent, alerts, config, fixes, llm, memory, pr_assist, slack
 from bot.runtime_config import BotConfig, runtime_config
 from bot.store import Store
 from bot.tools import READ_TOOLS
@@ -26,6 +26,9 @@ whoever is on call reads it first.
 
 - Look before concluding: the alert's session (sessions, session_logs, risk_usage), other recent alerts, \
 system_health, and the logs of whatever raised it. Keep it to a handful of tool calls; this should take seconds.
+- Cost alerts (COST_ANOMALY, COST_BUDGET): find where the spend went with aws_read on Cost Explorer \
+(GetCostAndUsage, daily, grouped by SERVICE then USAGE_TYPE or the resource's tags), then what changed around the jump \
+with CloudTrail LookupEvents and the resources themselves (DescribeInstances, ListFunctions, ...).
 - If the alert has a runbook, its URL points at a file in a repo (github.com/gnome-trading-group/<repo>/blob/main/<path>); \
 read it with read_doc(repo, path) and use its first steps.
 
@@ -103,11 +106,12 @@ def build_question(channel: str, thread_ts: str, current_ts: str, bot_user_id: s
 
 
 def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, placeholder_text: str, role: str,
-             prompt: Callable[[str], str], extra_system: str | None = None,
-             render: Callable[[str], tuple[str, list | None]] | None = None) -> None:
+             prompt: Callable[[str], str], instructions: str, note_scopes: list[str],
+             render: Callable[[str], tuple[str, list | None]]) -> None:
     """Posts a placeholder in the thread and replaces it with the agent's answer, or with why there isn't one.
     `prompt` gets the placeholder's ts, so a transcript of the thread can leave it out; `render` turns the answer into
-    the message's text and blocks."""
+    the message's text and blocks. The team notes for `note_scopes` go in the prompt, and a note the answer proposes
+    is offered under it with a Save button."""
     placeholder = slack.post(channel, thread_ts, placeholder_text)
     store.track_thread(channel, thread_ts)
     if store.tokens_today() >= cfg.limits.daily_token_budget:
@@ -116,8 +120,10 @@ def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, placeho
                           f"Spent {store.tokens_today():,} of {cfg.limits.daily_token_budget:,} tokens today.")
         return
 
+    extra_system = "\n\n".join(p for p in (instructions, memory.INSTRUCTIONS,
+                                            memory.prompt_section(store, note_scopes)) if p)
     try:
-        answer = agent.run(cfg, role, prompt(placeholder), READ_TOOLS, extra_system)
+        answer = agent.run(cfg, role, prompt(placeholder), [*READ_TOOLS, *memory.TOOLS], extra_system)
     except slack.SlackError as error:
         # It can post anywhere (chat:write.public) but only reads channels it's a member of.
         if "not_in_channel" not in str(error):
@@ -136,7 +142,10 @@ def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, placeho
         return
 
     store.add_tokens(answer.tokens)
-    text, blocks = render(answer.text) if render else (slack.mrkdwn(answer.text), None)
+    reply, proposal = memory.split_memory_line(answer.text)
+    text, blocks = render(reply)
+    if proposal:
+        blocks = [*(blocks or slack.text_blocks(text)), *memory.propose(store, channel, thread_ts, *proposal)]
     slack.update(channel, placeholder, text, blocks)
     logger.info("Answered %s/%s (%s) with %s using %d tokens", channel, thread_ts, role, answer.provider, answer.tokens)
 
@@ -146,6 +155,8 @@ def answer_question(message: dict, store: Store) -> None:
     channel, thread_ts = message["channel"], message["thread_ts"]
     if fixes.is_fix_request(message["text"]) and store.fix_context(channel, thread_ts) is not None:
         fixes.request_fix(cfg, store, channel, thread_ts, message["user"])
+        return
+    if memory.handle_command(cfg, store, message):
         return
     if not cfg.feature_flags.qa_enabled:
         slack.post(channel, thread_ts, "I'm not answering questions yet (feature flag `qa_enabled` is off).")
@@ -167,7 +178,8 @@ def answer_question(message: dict, store: Store) -> None:
             return text, None
         return text, [*slack.text_blocks(text), fixes.fix_button(channel, thread_ts, repos)]
 
-    _respond(cfg, store, channel, thread_ts, PLACEHOLDER, "qa", prompt, CHANGE_REQUEST_INSTRUCTIONS, render)
+    _respond(cfg, store, channel, thread_ts, PLACEHOLDER, "qa", prompt, CHANGE_REQUEST_INSTRUCTIONS, [memory.GENERAL],
+             render)
 
 
 def cooldown_key(alert: dict) -> str:
@@ -217,7 +229,7 @@ def triage_alert(alert: dict, store: Store) -> None:
         return text, [*slack.text_blocks(text), fixes.fix_button(channel, alert_ts, repos)]
 
     _respond(cfg, store, channel, alert_ts, TRIAGE_PLACEHOLDER, "triage", lambda _: triage_prompt(alert),
-             TRIAGE_INSTRUCTIONS, render)
+             TRIAGE_INSTRUCTIONS, [alert["type"], memory.GENERAL], render)
 
 
 def handler(event, context):

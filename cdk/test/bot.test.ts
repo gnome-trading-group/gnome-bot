@@ -15,14 +15,26 @@ describe('BotStack', () => {
     env: GnomeAccount.InfraDev.environment,
     ingressFn: stack.ingressFn, workerFn: stack.workerFn, workerLogGroup: stack.workerLogGroup, queue: stack.queue,
     dlq: stack.dlq, interactFn: stack.interactFn, callbackFn: stack.callbackFn, webhookFn: stack.webhookFn,
+    notesFn: stack.notesFn,
   });
   const template = Template.fromStack(stack);
 
   it('takes Slack events, fix-run callbacks and the GitHub webhook, each on one public POST route', () => {
-    const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).map((m) => m.Properties.HttpMethod);
-    expect(methods).toEqual(['POST', 'POST', 'POST']);
+    const open = Object.values(template.findResources('AWS::ApiGateway::Method'))
+      .filter((m: any) => m.Properties.AuthorizationType === 'NONE' && m.Properties.HttpMethod !== 'OPTIONS');
+    expect(open.map((m: any) => m.Properties.HttpMethod)).toEqual(['POST', 'POST', 'POST']);
     expect(Object.values(template.findResources('AWS::ApiGateway::Resource')).map((r) => r.Properties.PathPart).sort())
-      .toEqual(['callback', 'events', 'github', 'slack', 'webhook']);
+      .toEqual(['callback', 'events', 'github', 'notes', 'slack', 'webhook', '{id}']);
+  });
+
+  it('serves team notes to people only, through the shared authorizer', () => {
+    const notes = Object.values(template.findResources('AWS::ApiGateway::Method'))
+      .filter((m: any) => m.Properties.AuthorizationType === 'CUSTOM');
+    expect(notes.map((m: any) => m.Properties.HttpMethod).sort()).toEqual(['DELETE', 'GET', 'PATCH']);
+    expect(new Set(notes.map((m: any) => JSON.stringify(m.Properties.AuthorizerId))).size).toBe(1);
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: { Variables: Match.objectLike({ ALLOWED_KINDS: 'person' }) },
+    });
   });
 
   it('generates the webhook secret GitHub signs deliveries with', () => {
@@ -39,7 +51,7 @@ describe('BotStack', () => {
   it('tells the functions where fix runs report back', () => {
     const fns = Object.values(template.findResources('AWS::Lambda::Function'))
       .filter((f: any) => f.Properties.Environment?.Variables?.CALLBACK_URL);
-    expect(fns.length).toBe(5);
+    expect(fns.length).toBe(6);
     expect(JSON.stringify(fns[0].Properties.Environment.Variables.CALLBACK_URL)).toContain('/api/github/callback');
   });
 
@@ -73,6 +85,20 @@ describe('BotStack', () => {
     expect(policies.some((p) => p.includes('secret:gnome-bot/*') && p.includes('slack-bot-token'))).toBe(true);
   });
 
+  it('gives only the worker ReadOnlyAccess, with secret values, parameters and direct decrypts denied', () => {
+    const readOnly = Object.values(template.findResources('AWS::IAM::Role'))
+      .filter((r: any) => JSON.stringify(r.Properties.ManagedPolicyArns ?? []).includes(':aws:policy/ReadOnlyAccess'));
+    expect(readOnly.map((r: any) => r.Properties.RoleName)).toEqual(['gnome-bot-worker']);
+
+    const denials = Object.values(template.findResources('AWS::IAM::Policy'))
+      .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+      .filter((s: any) => s.Effect === 'Deny');
+    const denied = (action: string) => denials.find((s: any) => [s.Action].flat().includes(action));
+    expect(JSON.stringify(denied('secretsmanager:GetSecretValue').NotResource)).toContain('secret:gnome-bot/*');
+    expect(JSON.stringify(denied('ssm:GetParametersByPath').NotResource)).toContain('/gnome/alerting/api-url');
+    expect(denied('kms:Decrypt').Condition).toEqual({ Null: { 'kms:ViaService': 'true' } });
+  });
+
   it('writes nothing outside its own table and queue', () => {
     const actions = Object.values(template.findResources('AWS::IAM::Policy'))
       .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
@@ -94,7 +120,7 @@ describe('BotStack', () => {
     expect(names).toEqual(['Bot--Answers-AnswerFailures-Warning', 'Bot--SlackEvents-Fault-Count-Warning',
       'Bot--WorkQueue-DLQ-Queue-Message-Count-Max-Warning', 'Bot--WorkQueue-Queue-Message-Age-Max-Warning',
       'Bot--Worker-Fault-Count-Warning', 'Bot--Interact-Fault-Count-Warning', 'Bot--GithubCallback-Fault-Count-Warning',
-      'Bot--GithubWebhook-Fault-Count-Warning'].sort());
+      'Bot--GithubWebhook-Fault-Count-Warning', 'Bot--Notes-Fault-Count-Warning'].sort());
   });
 });
 

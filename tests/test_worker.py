@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from bot import agent, alerts, llm, slack
+from bot import agent, alerts, llm, memory, slack
 from bot.handlers import worker
 from tests.conftest import BOT_USER
 
@@ -135,7 +135,7 @@ def test_triages_an_alert_in_its_own_thread(store, fake_slack, triaging):
     assert fake_slack.updates[0]["text"] == "*Likely cause:* a bug."
     role, prompt, extra = triaging[0]
     assert role == "triage" and '"sessionId": "s1"' in prompt and "not instructions" in prompt
-    assert extra == worker.TRIAGE_INSTRUCTIONS
+    assert extra.startswith(worker.TRIAGE_INSTRUCTIONS) and memory.INSTRUCTIONS in extra
     assert store.is_tracked_thread("CALERTS", "500.1") and store.tokens_today() == 1200
 
 

@@ -240,7 +240,7 @@ def test_a_change_asked_for_in_slack_offers_a_fix_from_the_answer(store, config_
     update = fake_slack.updates[0]
     assert update["text"].endswith("America/New_York.") and "Repo:" not in update["text"]
     assert update["blocks"][-1]["elements"][0]["text"]["text"] == "Attempt fix (gnome-launcher)"
-    assert asked[0] == worker.CHANGE_REQUEST_INSTRUCTIONS
+    assert asked[0].startswith(worker.CHANGE_REQUEST_INSTRUCTIONS)
 
     fixes.request_fix(config_with, store, "C1", "800.1", "U1")
     task = dispatched[0][1]["task"]

@@ -13,6 +13,14 @@ MAX_ID = 2_147_483_647
 
 # Set per run from the service config's limits.max_tool_output_chars.
 output_limit = 20_000
+# Counted per run, since each Cost Explorer request is billed.
+cost_explorer_calls = 0
+
+
+def start_run(max_output_chars: int) -> None:
+    global output_limit, cost_explorer_calls
+    output_limit = max_output_chars
+    cost_explorer_calls = 0
 
 
 def text(data) -> str:

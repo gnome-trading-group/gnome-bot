@@ -8,12 +8,15 @@
 - FIXCTX#<channel>#<ts>        what a fix in that triage thread would work from: the repo, the alert, the triage (7 days)
 - FIXRUN#<channel>#<ts>        a fix running for that thread, so a second click doesn't start another (2 hours)
 - FIXES#<yyyy-mm-dd>           fixes started that UTC day, against the daily cap (3 days)
+- MEMPROP#<note id>            a team note the bot proposed, waiting for someone to Save it (7 days)
+- MEMORY#<note id>             a saved team note (kept until someone forgets it)
 """
 import json
 import time
 from datetime import datetime, timezone
 
 import boto3
+from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
 from bot import config
@@ -26,6 +29,8 @@ ONCE_TTL = 2 * DAY
 FIX_CONTEXT_TTL = 7 * DAY
 # A fix run is capped well under this by the workflow's timeout; the callback clears it sooner.
 FIX_RUN_TTL = 2 * 60 * 60
+MEMORY_PROPOSAL_TTL = 7 * DAY
+MEMORY_FIELDS = ("scope", "note", "channel", "thread_ts", "saved_by", "saved_at", "link", "edited_by", "edited_at")
 
 
 def _today() -> str:
@@ -132,3 +137,52 @@ class Store:
             ExpressionAttributeNames={"#ttl": "ttl"},
             ExpressionAttributeValues={":t": tokens, ":ttl": int(time.time()) + USAGE_TTL},
         )
+
+    def save_memory_proposal(self, note_id: str, proposal: dict) -> None:
+        self._table.put_item(Item={"pk": f"MEMPROP#{note_id}", **proposal,
+                                   "ttl": int(time.time()) + MEMORY_PROPOSAL_TTL})
+
+    def memory_proposal(self, note_id: str) -> dict | None:
+        item = self._table.get_item(Key={"pk": f"MEMPROP#{note_id}"}).get("Item")
+        if not item or int(item["ttl"]) <= time.time():
+            return None
+        return {k: item[k] for k in ("scope", "note", "channel", "thread_ts")}
+
+    def delete_memory_proposal(self, note_id: str) -> None:
+        self._table.delete_item(Key={"pk": f"MEMPROP#{note_id}"})
+
+    def save_memory(self, note_id: str, note: dict) -> None:
+        self._table.put_item(Item={"pk": f"MEMORY#{note_id}",
+                                   **{k: note[k] for k in MEMORY_FIELDS if note.get(k) is not None}})
+
+    def edit_memory(self, note_id: str, changes: dict) -> bool:
+        """Changes some of a saved note's fields; False if there's no such note."""
+        names = {f"#{k}": k for k in changes}
+        try:
+            self._table.update_item(
+                Key={"pk": f"MEMORY#{note_id}"},
+                UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in changes),
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues={f":{k}": v for k, v in changes.items()},
+            )
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
+    def delete_memory(self, note_id: str) -> bool:
+        """False if there was no such note."""
+        return "Attributes" in self._table.delete_item(Key={"pk": f"MEMORY#{note_id}"}, ReturnValues="ALL_OLD")
+
+    def memories(self) -> dict[str, dict]:
+        """Every saved team note by id. A scan, but the table only holds a few thousand short-lived rows."""
+        notes, params = {}, {"FilterExpression": Attr("pk").begins_with("MEMORY#")}
+        while True:
+            page = self._table.scan(**params)
+            for item in page["Items"]:
+                notes[item["pk"].removeprefix("MEMORY#")] = {k: item.get(k) for k in MEMORY_FIELDS}
+            if "LastEvaluatedKey" not in page:
+                return notes
+            params["ExclusiveStartKey"] = page["LastEvaluatedKey"]

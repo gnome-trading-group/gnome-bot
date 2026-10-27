@@ -3,7 +3,7 @@ signature and forwards every `bot_*` click here as an async invoke, so this neve
 import json
 import logging
 
-from bot import fixes, slack
+from bot import fixes, memory
 from bot.runtime_config import runtime_config
 from bot.store import Store
 
@@ -17,6 +17,9 @@ def handler(event, context):
     global _store
     _store = _store or Store()
     action = (event.get("actions") or [{}])[0]
+    if action.get("action_id") in (memory.SAVE_ACTION_ID, memory.DISMISS_ACTION_ID):
+        memory.handle_click(_store, event)
+        return
     if action.get("action_id") != fixes.FIX_ACTION_ID:
         logger.warning("Ignoring unknown action %s", action.get("action_id"))
         return
