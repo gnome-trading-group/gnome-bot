@@ -85,7 +85,7 @@ describe('BotStack', () => {
     expect(policies.some((p) => p.includes('secret:gnome-bot/*') && p.includes('slack-bot-token'))).toBe(true);
   });
 
-  it('gives only the worker ReadOnlyAccess, with secret values, parameters and direct decrypts denied', () => {
+  it('gives only the worker ReadOnlyAccess, with secret values and parameters denied', () => {
     const readOnly = Object.values(template.findResources('AWS::IAM::Role'))
       .filter((r: any) => JSON.stringify(r.Properties.ManagedPolicyArns ?? []).includes(':aws:policy/ReadOnlyAccess'));
     expect(readOnly.map((r: any) => r.Properties.RoleName)).toEqual(['gnome-bot-worker']);
@@ -96,7 +96,8 @@ describe('BotStack', () => {
     const denied = (action: string) => denials.find((s: any) => [s.Action].flat().includes(action));
     expect(JSON.stringify(denied('secretsmanager:GetSecretValue').NotResource)).toContain('secret:gnome-bot/*');
     expect(JSON.stringify(denied('ssm:GetParametersByPath').NotResource)).toContain('/gnome/alerting/api-url');
-    expect(denied('kms:Decrypt').Condition).toEqual({ Null: { 'kms:ViaService': 'true' } });
+    // Lambda decrypts the worker's environment with its role; a KMS deny stops it starting.
+    expect(denied('kms:Decrypt')).toBeUndefined();
   });
 
   it('writes nothing outside its own table and queue', () => {

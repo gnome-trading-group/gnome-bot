@@ -75,7 +75,8 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
 - Every tool is read-only. Writes (acknowledging alerts, stopping sessions) need a `bot.write` scope and their own
   design; don't add them ad hoc.
 - Anything the worker reads can end up in Slack. Its role has AWS `ReadOnlyAccess`, with explicit denies on secret
-  values (except the bot's own), SSM parameters (except `/gnome/alerting/api-url`) and direct `kms:Decrypt`.
+  values (except the bot's own) and SSM parameters (except `/gnome/alerting/api-url`). Never deny `kms:Decrypt`: Lambda
+  decrypts the worker's environment with its role, and the worker then can't start (`KMSAccessDeniedException`).
   `aws_read` also refuses credential/key reads (`REFUSED`) and blanks env vars and user data (`REDACTED_KEYS`) before
   the model sees them; keep both lists when adding services. Cost Explorer bills $0.01 a call, capped at 10 an answer.
 - Team notes are only ever written by a person's click, never by the model or from alert/tool text. They go in the

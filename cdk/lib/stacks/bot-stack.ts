@@ -133,7 +133,8 @@ export class BotStack extends cdk.Stack {
     table.grantReadWriteData(this.workerFn);
 
     // Whatever the worker reads can end up in a Slack message, so secret values stay closed even if ReadOnlyAccess
-    // grows: only the bot's own secrets and the one parameter it needs, and no direct KMS decrypts.
+    // grows: only the bot's own secrets and the one parameter it needs. KMS is left alone: Lambda decrypts the
+    // function's environment with this role, as a direct kms:Decrypt call, so denying those stops the worker starting.
     const botSecretArns = [
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:slack-bot-token*`,
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:gnome-bot/*`,
@@ -149,13 +150,6 @@ export class BotStack extends cdk.Stack {
         effect: iam.Effect.DENY,
         actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath', 'ssm:GetParameterHistory'],
         notResources: [alertingUrlParameter],
-      },
-      // Services decrypting on the worker's behalf (Secrets Manager for its own secrets) set kms:ViaService.
-      {
-        effect: iam.Effect.DENY,
-        actions: ['kms:Decrypt'],
-        resources: ['*'],
-        conditions: { Null: { 'kms:ViaService': 'true' } },
       },
     ];
     for (const statement of denials) {
