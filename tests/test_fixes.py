@@ -106,7 +106,7 @@ def test_a_triage_naming_a_repo_offers_a_fix_and_keeps_its_context(store, fake_s
     alert = {"alertId": 1, "key": "k", "type": "FATAL_ERROR", "severity": "CRITICAL", "strategyId": 7,
              "slackChannel": "CALERTS", "slackTs": "500.1", "stage": "dev"}
     worker.triage_alert(alert, store)
-    update = fake_slack.updates[0]
+    update = fake_slack.posts[0]
     assert update["text"] == "*Likely cause:* a bug."
     assert update["blocks"][0]["text"]["text"] == "*Likely cause:* a bug."
     button = update["blocks"][-1]["elements"][0]
@@ -121,7 +121,7 @@ def test_a_fix_across_repos_names_them_all_on_the_button_and_in_the_run(store, f
                                                               10, "x"))
     worker.triage_alert({"alertId": 1, "key": "k", "type": "FATAL_ERROR", "severity": "CRITICAL", "strategyId": 7,
                          "slackChannel": "CALERTS", "slackTs": "500.1", "stage": "dev"}, store)
-    assert fake_slack.updates[0]["blocks"][-1]["elements"][0]["text"]["text"] == "Attempt fix (gnomepy, gnome-classifier)"
+    assert fake_slack.posts[0]["blocks"][-1]["elements"][0]["text"]["text"] == "Attempt fix (gnomepy, gnome-classifier)"
     fixes.request_fix(config_with, store, "CALERTS", "500.1", "U1")
     assert dispatched[0][1]["repos"] == "gnomepy,gnome-classifier"
     assert "`gnomepy`, `gnome-classifier`" in fake_slack.posts[-1]["text"]
@@ -137,7 +137,7 @@ def test_no_button_while_fixes_are_off_but_the_context_is_kept(store, fake_slack
     monkeypatch.setattr(agent, "run", lambda *a: agent.Answer("*Likely cause:* a bug.\nRepo: gnome-oms", 10, "x"))
     worker.triage_alert({"alertId": 1, "key": "k", "type": "FATAL_ERROR", "severity": "CRITICAL", "strategyId": 7,
                          "slackChannel": "CALERTS", "slackTs": "500.1", "stage": "dev"}, store)
-    assert "blocks" not in fake_slack.updates[0] and store.fix_context("CALERTS", "500.1")["repos"] == ["gnome-oms"]
+    assert "blocks" not in fake_slack.posts[0] and store.fix_context("CALERTS", "500.1")["repos"] == ["gnome-oms"]
 
 
 def test_fix_this_in_a_triage_thread_starts_a_fix_instead_of_an_answer(store, config_with, dispatched, fake_slack,
@@ -237,7 +237,7 @@ def test_a_change_asked_for_in_slack_offers_a_fix_from_the_answer(store, config_
         "`format_time` in `slack_client.py` uses UTC; I'd switch it to America/New_York.\nRepo: gnome-launcher", 10, "x"))
     worker.answer_question(question(f"<@{BOT_USER}> launcher Slack times should be ET, can you fix it?"), store)
 
-    update = fake_slack.updates[0]
+    update = fake_slack.posts[0]
     assert update["text"].endswith("America/New_York.") and "Repo:" not in update["text"]
     assert update["blocks"][-1]["elements"][0]["text"]["text"] == "Attempt fix (gnome-launcher)"
     assert asked[0].startswith(worker.CHANGE_REQUEST_INSTRUCTIONS)
@@ -251,4 +251,4 @@ def test_an_ordinary_answer_offers_no_fix(store, config_with, fake_slack, monkey
     fake_slack.threads[("C1", "800.1")] = [{"ts": "800.1", "user": "U1", "text": "what's pnl?"}]
     monkeypatch.setattr(agent, "run", lambda *a: agent.Answer("Up $12 today.", 10, "x"))
     worker.answer_question(question("what's pnl?"), store)
-    assert "blocks" not in fake_slack.updates[0] and store.fix_context("C1", "800.1") is None
+    assert "blocks" not in fake_slack.posts[0] and store.fix_context("C1", "800.1") is None

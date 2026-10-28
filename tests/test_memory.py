@@ -68,7 +68,7 @@ def test_a_proposed_note_is_offered_with_save_and_dismiss_but_not_kept(store, fa
                            "EC2 spend for a day.")
     ask(fake_slack, store, "that cost anomaly is just the shard resize")
 
-    update = fake_slack.updates[0]
+    update = fake_slack.posts[0]
     assert update["text"] == "Got it, that's expected after a resize."
     offer, buttons = update["blocks"][-2:]
     assert offer["type"] == "input" and offer["element"]["initial_value"].startswith("Shard resizes double EC2 spend")

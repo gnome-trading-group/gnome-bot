@@ -49,6 +49,7 @@ class FakeSlack:
     def __init__(self):
         self.posts: list[dict] = []
         self.updates: list[dict] = []
+        self.reactions: list[tuple[str, str, str, str]] = []
         self.threads: dict[tuple[str, str], list[dict]] = {}
         self.names: dict[str, str] = {}
         self._ts = 1000
@@ -56,12 +57,19 @@ class FakeSlack:
     def post(self, channel, thread_ts, text, blocks=None):
         self._ts += 1
         ts = f"{self._ts}.000"
-        self.posts.append({"channel": channel, "thread_ts": thread_ts, "text": text, "ts": ts})
+        self.posts.append({"channel": channel, "thread_ts": thread_ts, "text": text, "ts": ts,
+                           **({"blocks": blocks} if blocks else {})})
         self.threads.setdefault((channel, thread_ts), []).append({"ts": ts, "bot_id": "B1", "text": text})
         return ts
 
     def update(self, channel, ts, text, blocks=None):
         self.updates.append({"channel": channel, "ts": ts, "text": text, **({"blocks": blocks} if blocks else {})})
+
+    def add_reaction(self, channel, ts, name):
+        self.reactions.append(("add", channel, ts, name))
+
+    def remove_reaction(self, channel, ts, name):
+        self.reactions.append(("remove", channel, ts, name))
 
     def thread_messages(self, channel, thread_ts, limit):
         return self.threads.get((channel, thread_ts), [])[:limit]
@@ -73,7 +81,7 @@ class FakeSlack:
 @pytest.fixture
 def fake_slack(monkeypatch):
     fake = FakeSlack()
-    for name in ("post", "update", "thread_messages", "user_name"):
+    for name in ("post", "update", "add_reaction", "remove_reaction", "thread_messages", "user_name"):
         monkeypatch.setattr(slack, name, getattr(fake, name))
     return fake
 

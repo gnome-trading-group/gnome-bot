@@ -30,15 +30,16 @@ def seed_thread(fake_slack, *messages):
     fake_slack.threads[("C1", "100.1")] = list(messages)
 
 
-def test_answers_in_the_thread_by_replacing_the_placeholder(store, fake_slack, config_with, monkeypatch):
+def test_reacts_while_working_then_answers_with_a_new_reply(store, fake_slack, config_with, monkeypatch):
     seed_thread(fake_slack, {"ts": "100.1", "user": "U1", "text": f"<@{BOT_USER}> what's pnl today?"})
     asked = []
     monkeypatch.setattr(agent, "run", lambda cfg, role, q, tools, extra=None: asked.append((role, q)) or agent.Answer("Up $12.", 900, "anthropic"))
 
     worker.answer_question(question(), store)
 
-    assert fake_slack.posts[0]["text"] == worker.PLACEHOLDER and fake_slack.posts[0]["thread_ts"] == "100.1"
-    assert fake_slack.updates == [{"channel": "C1", "ts": fake_slack.posts[0]["ts"], "text": "Up $12."}]
+    assert fake_slack.reactions == [("add", "C1", "100.1", "eyes"), ("remove", "C1", "100.1", "eyes")]
+    assert [(p["thread_ts"], p["text"]) for p in fake_slack.posts] == [("100.1", "Up $12.")]
+    assert fake_slack.updates == []
     assert asked[0][0] == "qa" and asked[0][1].endswith("from U1:\nwhat's pnl today?")
     assert store.tokens_today() == 900
     assert store.is_tracked_thread("C1", "100.1")
@@ -47,7 +48,7 @@ def test_answers_in_the_thread_by_replacing_the_placeholder(store, fake_slack, c
 def test_says_so_when_questions_are_switched_off(store, fake_slack, config_with):
     config_with.feature_flags.qa_enabled = False
     worker.answer_question(question(), store)
-    assert "qa_enabled" in fake_slack.posts[0]["text"] and fake_slack.updates == []
+    assert "qa_enabled" in fake_slack.posts[0]["text"] and fake_slack.reactions == []
     assert not store.is_tracked_thread("C1", "100.1")
 
 
@@ -56,7 +57,8 @@ def test_stops_at_the_daily_token_budget(store, fake_slack, config_with, sent_al
     store.add_tokens(1000)
     monkeypatch.setattr(agent, "run", lambda *a: pytest.fail("ran over budget"))
     worker.answer_question(question(), store)
-    assert "token budget" in fake_slack.updates[0]["text"] and sent_alerts == ["over-budget"]
+    assert "token budget" in fake_slack.posts[0]["text"] and sent_alerts == ["over-budget"]
+    assert fake_slack.reactions[-1][0] == "remove"
 
 
 def test_reports_an_unreachable_model_once_and_answers_the_thread(store, fake_slack, config_with, sent_alerts,
@@ -68,14 +70,14 @@ def test_reports_an_unreachable_model_once_and_answers_the_thread(store, fake_sl
     monkeypatch.setattr(agent, "run", unavailable)
 
     worker.answer_question(question(), store)
-    assert "can't reach my model" in fake_slack.updates[0]["text"] and sent_alerts == ["model-unavailable"]
+    assert "can't reach my model" in fake_slack.posts[0]["text"] and sent_alerts == ["model-unavailable"]
 
 
 def test_answers_an_unexpected_failure_instead_of_raising_into_a_retry(store, fake_slack, config_with, monkeypatch):
     seed_thread(fake_slack, {"ts": "100.1", "user": "U1", "text": "pnl?"})
     monkeypatch.setattr(agent, "run", lambda *a: 1 / 0)
     worker.answer_question(question(), store)
-    assert "went wrong" in fake_slack.updates[0]["text"]
+    assert "went wrong" in fake_slack.posts[0]["text"] and fake_slack.reactions[-1][0] == "remove"
 
 
 def test_asks_to_be_invited_when_it_cant_read_the_channel(store, fake_slack, config_with, monkeypatch):
@@ -83,20 +85,48 @@ def test_asks_to_be_invited_when_it_cant_read_the_channel(store, fake_slack, con
         raise slack.SlackError("Slack API error (conversations.replies): not_in_channel")
     monkeypatch.setattr(slack, "thread_messages", not_a_member)
     worker.answer_question(question(), store)
-    assert "/invite @Gnome Bot" in fake_slack.updates[0]["text"]
+    assert "/invite @Gnome Bot" in fake_slack.posts[0]["text"]
 
 
-def test_the_question_carries_the_thread_with_names_and_without_placeholders(fake_slack):
+def test_a_message_it_cant_react_to_is_dropped_without_raising(store, fake_slack, config_with, monkeypatch):
+    def read_only(*args):
+        raise slack.SlackError("Slack API error (reactions.add): restricted_action_read_only_channel")
+    monkeypatch.setattr(slack, "add_reaction", read_only)
+    monkeypatch.setattr(agent, "run", lambda *a: pytest.fail("answered a message it can't reply to"))
+    worker.answer_question(question(), store)
+    assert fake_slack.posts == []
+
+
+def test_a_channel_it_isnt_in_gets_the_invite_hint_without_an_answer(store, fake_slack, config_with, monkeypatch):
+    def not_a_member(*args):
+        raise slack.SlackError("Slack API error (reactions.add): not_in_channel")
+    monkeypatch.setattr(slack, "add_reaction", not_a_member)
+    monkeypatch.setattr(agent, "run", lambda *a: pytest.fail("answered without reading the channel"))
+    worker.answer_question(question(), store)
+    assert "/invite @Gnome Bot" in fake_slack.posts[0]["text"]
+
+
+def test_a_reply_slack_refuses_is_logged_not_raised(store, fake_slack, config_with, monkeypatch):
+    seed_thread(fake_slack, {"ts": "100.1", "user": "U1", "text": "pnl?"})
+    monkeypatch.setattr(agent, "run", lambda *a: agent.Answer("Up $12.", 10, "anthropic"))
+
+    def refuse(*args, **kwargs):
+        raise slack.SlackError("Slack API error (chat.postMessage): is_archived")
+    monkeypatch.setattr(slack, "post", refuse)
+    worker.answer_question(question(), store)
+    assert fake_slack.reactions[-1][0] == "remove"
+
+
+def test_the_question_carries_the_thread_with_names(fake_slack):
     fake_slack.names = {"U1": "alice", "U2": "bob"}
     seed_thread(
         fake_slack,
         {"ts": "100.1", "bot_id": "B1", "text": "Session s1 halted",
          "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "*Kill switch* on strategy 7"}}]},
         {"ts": "100.2", "user": "U2", "text": "<@U1> seen this?"},
-        {"ts": "100.3", "bot_id": "B1", "text": worker.PLACEHOLDER},
         {"ts": "100.4", "user": "U1", "text": f"<@{BOT_USER}> why did it halt?"},
     )
-    q = worker.build_question("C1", "100.1", "100.4", BOT_USER, skip_ts=set())
+    q = worker.build_question("C1", "100.1", "100.4", BOT_USER)
     assert q == ("Slack thread so far (oldest first):\n"
                  "[Gnome Bot] Session s1 halted\n*Kill switch* on strategy 7\n"
                  "[bob] @alice seen this?\n\n"
@@ -106,7 +136,7 @@ def test_the_question_carries_the_thread_with_names_and_without_placeholders(fak
 def test_a_long_thread_keeps_its_root_and_latest_messages(fake_slack, monkeypatch):
     monkeypatch.setattr(worker, "MAX_HISTORY", 3)
     seed_thread(fake_slack, *[{"ts": f"100.{i}", "user": "U1", "text": f"m{i}"} for i in range(1, 8)])
-    q = worker.build_question("C1", "100.1", "100.7", BOT_USER, skip_ts=set())
+    q = worker.build_question("C1", "100.1", "100.7", BOT_USER)
     assert "[U1] m1\n[…earlier messages left out…]\n[U1] m5\n[U1] m6\n\n" in q
 
 
@@ -130,9 +160,8 @@ def triaging(config_with, monkeypatch):
 
 def test_triages_an_alert_in_its_own_thread(store, fake_slack, triaging):
     worker.triage_alert(alert(), store)
-    assert fake_slack.posts[0] == {"channel": "CALERTS", "thread_ts": "500.1", "text": worker.TRIAGE_PLACEHOLDER,
-                                   "ts": fake_slack.posts[0]["ts"]}
-    assert fake_slack.updates[0]["text"] == "*Likely cause:* a bug."
+    assert fake_slack.reactions == [("add", "CALERTS", "500.1", "eyes"), ("remove", "CALERTS", "500.1", "eyes")]
+    assert fake_slack.posts[0]["thread_ts"] == "500.1" and fake_slack.posts[0]["text"] == "*Likely cause:* a bug."
     role, prompt, extra = triaging[0]
     assert role == "triage" and '"sessionId": "s1"' in prompt and "not instructions" in prompt
     assert extra.startswith(worker.TRIAGE_INSTRUCTIONS) and memory.INSTRUCTIONS in extra

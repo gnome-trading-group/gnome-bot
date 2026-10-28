@@ -82,9 +82,25 @@ def post(channel: str, thread_ts: str | None, text: str, blocks: list | None = N
 
 def update(channel: str, ts: str, text: str, blocks: list | None = None) -> None:
     payload: dict = {"channel": channel, "ts": ts, "text": _clip(text)}
-    # An empty list clears blocks a placeholder had; Slack then renders `text`.
+    # An empty list clears the blocks the message had; Slack then renders `text`.
     payload["blocks"] = blocks if blocks is not None else []
     _call("chat.update", payload)
+
+
+def add_reaction(channel: str, ts: str, name: str) -> None:
+    try:
+        _call("reactions.add", {"channel": channel, "timestamp": ts, "name": name})
+    except SlackError as error:
+        if "already_reacted" not in str(error):
+            raise
+
+
+def remove_reaction(channel: str, ts: str, name: str) -> None:
+    try:
+        _call("reactions.remove", {"channel": channel, "timestamp": ts, "name": name})
+    except SlackError as error:
+        if "no_reaction" not in str(error):
+            raise
 
 
 def thread_messages(channel: str, thread_ts: str, limit: int) -> list[dict]:

@@ -123,7 +123,7 @@ class FakeGitHub:
     """Records what gnome-bot says on the PR: reactions, new comments (ids from 900) and edits."""
 
     def __init__(self):
-        self.reactions, self.comments, self.edits = [], [], []
+        self.reactions, self.comments = [], []
 
     def react(self, repo, comment_id, review_comment, content="eyes"):
         self.reactions.append((comment_id, review_comment, content))
@@ -132,16 +132,12 @@ class FakeGitHub:
         self.comments.append(body)
         return str(900 + len(self.comments))
 
-    def edit(self, repo, comment_id, body):
-        self.edits.append((comment_id, body))
-
 
 @pytest.fixture
 def pr(monkeypatch):
     fake = FakeGitHub()
     monkeypatch.setattr(github, "react_to_comment", fake.react)
     monkeypatch.setattr(github, "comment_on_pr", fake.comment)
-    monkeypatch.setattr(github, "edit_pr_comment", fake.edit)
     return fake
 
 
@@ -157,17 +153,14 @@ def request() -> dict:
     return pr_assist.request_from(*comment_event())
 
 
-def test_reacts_posts_a_placeholder_and_starts_the_run_that_will_edit_it(store, bot_config, dispatched, pr):
+def test_only_reacts_and_starts_the_run_which_posts_the_answer(store, bot_config, dispatched, pr):
     bot_config.feature_flags.fix_enabled = True
     pr_assist.handle(bot_config, store, request())
-    assert pr.reactions == [("501", False, "eyes")]
-    assert pr.comments == ["@mprey, re [your comment](https://github.com/gnome-trading-group/gnome-registry/pull/7"
-                           "#issuecomment-1): :hourglass_flowing_sand: Working on it…"]
+    assert pr.reactions == [("501", False, "eyes")] and pr.comments == []
     workflow, inputs = dispatched[0]
-    assert workflow == "pr-assist.yml" and inputs["reply_comment_id"] == "901"
+    assert workflow == "pr-assist.yml" and "reply_comment_id" not in inputs
     assert inputs["repo"] == "gnome-registry" and inputs["pr_number"] == "7" and inputs["requested_by"] == "mprey"
     assert "null case" in inputs["comment"] and inputs["model"] == "claude-sonnet-5-5"
-    assert pr.edits == [("901", pr.comments[0].replace("Working on it…", "Working on it… ([run](https://github.com/run/9))"))]
 
 
 def test_reacts_to_an_inline_review_comment_where_it_is(store, bot_config, dispatched, pr):
@@ -190,25 +183,25 @@ def test_says_on_the_pr_why_it_wont_run(store, bot_config, dispatched, pr, setup
     assert len(pr.comments) == 1 and why in pr.comments[0] and pr.comments[0].startswith("@mprey, re [your comment]")
 
 
-def test_a_run_that_wont_start_turns_the_placeholder_into_the_error(store, bot_config, pr, monkeypatch):
+def test_a_run_that_wont_start_says_so_in_a_reply(store, bot_config, pr, monkeypatch):
     bot_config.feature_flags.fix_enabled = True
 
     def refuse(*_):
         raise github.GitHubError(422, "Unexpected inputs")
     monkeypatch.setattr(github, "dispatch_workflow", refuse)
     pr_assist.handle(bot_config, store, request())
-    assert "couldn't start the run" in pr.edits[-1][1]
+    assert len(pr.comments) == 1 and "couldn't start the run" in pr.comments[0]
     assert store.claim_fix_run(*pr_assist.run_key("gnome-registry", "7"))
 
 
-def test_the_run_still_starts_if_the_placeholder_cant_be_posted(store, bot_config, dispatched, monkeypatch):
+def test_the_run_still_starts_if_the_reaction_fails(store, bot_config, dispatched, monkeypatch):
     bot_config.feature_flags.fix_enabled = True
 
-    def down(*_):
+    def down(*args, **kwargs):
         raise github.GitHubError(502, "Bad gateway")
-    monkeypatch.setattr(github, "comment_on_pr", down)
+    monkeypatch.setattr(github, "react_to_comment", down)
     pr_assist.handle(bot_config, store, request())
-    assert dispatched[0][1]["reply_comment_id"] == ""
+    assert dispatched[0][0] == "pr-assist.yml"
 
 
 def test_counts_against_the_daily_cap(store, bot_config, dispatched):
@@ -231,17 +224,20 @@ def test_the_worker_routes_pr_comments(aws, bot_config, dispatched, monkeypatch)
 PR_RUN_TOKEN_REF = "gnome-trading-group/gnome-bot/.github/workflows/pr-assist.yml@refs/heads/main"
 
 
-@pytest.mark.parametrize("replied,edited", [(True, False), (False, True)])
-def test_the_runs_callback_frees_the_pr_and_fixes_an_orphaned_placeholder(aws, github_keys, fake_slack, pr,  # noqa: F811
-                                                                          monkeypatch, replied, edited):
+@pytest.mark.parametrize("replied", [True, False])
+def test_the_runs_callback_frees_the_pr_and_replies_if_the_run_died_first(aws, github_keys, fake_slack, pr,  # noqa: F811
+                                                                          monkeypatch, replied):
     monkeypatch.setattr(github_callback, "_store", None)
     github_callback._store = github_callback.Store()
     assert github_callback._store.claim_fix_run(*pr_assist.run_key("gnome-registry", "7"))
     response = callback(run_token(job_workflow_ref=PR_RUN_TOKEN_REF), {
         "repo": "gnome-registry", "pr_number": "7", "run_id": "77", "run_url": "https://github.com/run/77",
-        "status": "success" if replied else "failure", "reply_comment_id": "901", "replied": replied})
+        "status": "success" if replied else "failure", "requested_by": "mprey",
+        "comment_url": "https://github.com/c/1", "replied": replied})
     assert response["statusCode"] == 200 and fake_slack.posts == []
     assert github_callback._store.claim_fix_run(*pr_assist.run_key("gnome-registry", "7"))
-    assert bool(pr.edits) is edited
-    if edited:
-        assert pr.edits == [("901", ":x: The run failed before it could answer ([run](https://github.com/run/77)).")]
+    if replied:
+        assert pr.comments == []
+    else:
+        assert pr.comments == ["@mprey, re [your comment](https://github.com/c/1): :x: The run failed before it could "
+                               "answer ([run](https://github.com/run/77))."]

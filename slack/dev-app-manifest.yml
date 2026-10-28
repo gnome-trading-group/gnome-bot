@@ -1,10 +1,10 @@
-# The Gnome Bot Dev Slack app (dev account). Change settings here, then paste this into the app's App Manifest page
-# (api.slack.com/apps). The URLs are dev's BotStack SlackEventsUrl and LauncherSlackInteractionStack
-# SlackInteractionUrl; the prod app is prod-app-manifest.yml.
+# The Gnome Bot Dev Slack app (dev account). The two apps' manifests are identical apart from the name and the
+# dev URLs (BotStack SlackEventsUrl, LauncherSlackInteractionStack SlackInteractionUrl); change both together, then
+# paste each into its app's App Manifest page (api.slack.com/apps) and reinstall if the scopes changed.
 display_information:
   name: Gnome Bot Dev
-  description: Gnome Trading Group's ops bot (dev)
-  background_color: "#4a5568"
+  description: Gnome Trading Group's ops bot
+  background_color: "#17251d"
 features:
   app_home:
     home_tab_enabled: false
@@ -24,9 +24,12 @@ oauth_config:
       # Posting answers, alerts and launch approvals; .public posts where it hasn't been invited.
       - chat:write
       - chat:write.public
+      # :eyes: on the message it's working on, taken off when it replies.
+      - reactions:write
       # Names in thread transcripts, and the email a fix or a saved note is attributed to.
       - users:read
       - users:read.email
+  pkce_enabled: false
 settings:
   event_subscriptions:
     request_url: https://6w53yq29uk.execute-api.us-east-1.amazonaws.com/api/slack/events
@@ -40,4 +43,6 @@ settings:
     request_url: https://cokqmywj4l.execute-api.us-east-1.amazonaws.com/prod/slack/interact
   org_deploy_enabled: false
   socket_mode_enabled: false
+  is_mcp_enabled: false
   token_rotation_enabled: false
+  app_level_token_rotation_enabled: false

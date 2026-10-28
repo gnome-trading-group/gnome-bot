@@ -28,8 +28,10 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
 - `bot/handlers/slack_events.py`: Slack Events API ingress. Verifies the signature, dedupes the event, decides if the
   message is for the bot (mention, DM, or a reply in a thread it's in), and queues it. Must answer Slack in 3s.
 - `bot/handlers/worker.py`: SQS consumer for questions and for `AlertDelivered` events (the registry's alert router
-  puts one on the `gnome-alerts` bus after each firing Slack post). Posts a placeholder, runs the agent, edits the
-  placeholder into the answer. Never raises after the placeholder (a retry would double-post and re-spend tokens).
+  puts one on the `gnome-alerts` bus after each firing Slack post). Adds :eyes: to the message it's handling, runs the
+  agent, posts the answer as a new thread reply (edits notify nobody) and takes the reaction off. A message it can't
+  react to (read-only DM, archived channel) is dropped with a warning; after that it never raises (a retry would
+  re-spend tokens). Needs the `reactions:write` scope.
   Triage ends with a `Repo: a, b` line (up to 3, in ship order); so does an answer to someone asking for a code change
   (`CHANGE_REQUEST_INSTRUCTIONS`). When it names repos, the worker keeps a fix context and adds "Attempt fix (repos)".
 - `bot/fixes.py` + `bot/handlers/interact.py` + `bot/handlers/github_callback.py`: fix PRs. A click (forwarded by the
@@ -40,9 +42,9 @@ poetry run python -c 'from bot import agent; from bot.runtime_config import BotC
   PRs (`pr_assist.TRIGGER`; `@gnome-bot` also matches, though GitHub links that name to an unrelated org).
   The App's webhook (`POST /github/webhook`, signed with `gnome-bot/github-webhook-secret`) delivers PR comments; only
   `@gnome-trading-bot` mentions by org members (`author_association` OWNER/MEMBER) from people, not bots, are queued. The
-  worker reacts with :eyes:, posts a "Working on it… (run)" reply and starts `pr-assist.yml`, which runs Claude Code
-  on the PR branch, pushes its commits there (never force; forks refused) and edits that reply into the answer. If
-  the run dies first, the callback marks the reply failed. A request that won't run (fixes off, a run already going
+  worker reacts with :eyes: (left on afterwards) and starts `pr-assist.yml`, which runs Claude Code on the PR branch,
+  pushes its commits there (never force; forks refused) and posts the answer as a new comment. If the run dies
+  first, the callback posts the failure as a new comment. A request that won't run (fixes off, a run already going
   on that PR, the daily cap) gets the reason as the reply. Same caps as fixes: one run per PR, `max_fixes_per_day`.
 - `.github/workflows/fix.yml`: clones each target repo under `work/<repo>` (remotes without credentials), runs one
   claude-code-action session across them (edit, build, test, commit; its token can only read gnome-bot), then a

@@ -1,34 +1,43 @@
-# The Gnome Bot Slack app (prod account), exported from its App Manifest page. Change settings here, then paste this
-# back there. The URLs are prod's BotStack SlackEventsUrl and LauncherSlackInteractionStack SlackInteractionUrl; the
-# scopes are the same as the dev app's (dev-app-manifest.yml says why each is needed).
+# The Gnome Bot Slack app (prod account). The two apps' manifests are identical apart from the name and the
+# prod URLs (BotStack SlackEventsUrl, LauncherSlackInteractionStack SlackInteractionUrl); change both together, then
+# paste each into its app's App Manifest page (api.slack.com/apps) and reinstall if the scopes changed.
 display_information:
   name: Gnome Bot
-  description: Gnome's chat bot
+  description: Gnome Trading Group's ops bot
   background_color: "#17251d"
 features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
   bot_user:
     display_name: Gnome Bot
-    always_online: false
+    always_online: true
 oauth_config:
   scopes:
     bot:
-      - channels:history
-      - chat:write
-      - chat:write.public
+      # Mentions, DMs, and follow-ups in threads it's in (it reads the thread to answer).
       - app_mentions:read
+      - channels:history
       - groups:history
       - im:history
+      # Posting answers, alerts and launch approvals; .public posts where it hasn't been invited.
+      - chat:write
+      - chat:write.public
+      # :eyes: on the message it's working on, taken off when it replies.
+      - reactions:write
+      # Names in thread transcripts, and the email a fix or a saved note is attributed to.
       - users:read
       - users:read.email
   pkce_enabled: false
 settings:
   event_subscriptions:
+    request_url: https://pdk3dk0gh1.execute-api.us-east-1.amazonaws.com/api/slack/events
     bot_events:
       - app_mention
       - message.channels
       - message.groups
       - message.im
-    request_url: https://pdk3dk0gh1.execute-api.us-east-1.amazonaws.com/api/slack/events
   interactivity:
     is_enabled: true
     request_url: https://18q9yyeadh.execute-api.us-east-1.amazonaws.com/prod/slack/interact

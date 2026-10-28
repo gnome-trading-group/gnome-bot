@@ -1,8 +1,9 @@
-"""Answers queued Slack questions, and triages alerts as the registry posts them. Either way a placeholder goes into
-the thread at once and is replaced by the answer.
+"""Answers queued Slack questions, and triages alerts as the registry posts them. Either way the message being
+handled gets an :eyes: reaction at once, and the answer is a new reply in its thread (an edit notifies nobody), after
+which the reaction comes off.
 
-A failure after the placeholder is posted is answered in the thread and not retried: SQS redelivery would post a
-second placeholder and re-spend the tokens. Out of credit is the same; it won't fix itself in a retry."""
+A failure once work has started is answered in the thread and not retried: SQS redelivery would re-spend the tokens.
+Out of credit is the same; it won't fix itself in a retry."""
 import json
 import logging
 from typing import Callable
@@ -15,8 +16,7 @@ from bot.tools import READ_TOOLS
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-PLACEHOLDER = ":hourglass_flowing_sand: checking…"
-TRIAGE_PLACEHOLDER = ":mag: looking into this alert…"
+WORKING_REACTION = "eyes"
 # The registry's alert router puts this on the gnome-alerts bus after it posts a firing alert to Slack.
 ALERT_DELIVERED = "AlertDelivered"
 SEVERITY_RANK = {"INFO": 0, "WARNING": 1, "ERROR": 2, "CRITICAL": 3}
@@ -72,7 +72,7 @@ def _message_text(message: dict) -> str:
     return "\n".join(p for p in parts if p).strip()
 
 
-def build_question(channel: str, thread_ts: str, current_ts: str, bot_user_id: str, skip_ts: set[str]) -> str:
+def build_question(channel: str, thread_ts: str, current_ts: str, bot_user_id: str) -> str:
     """The thread as a transcript, then the message to answer. History goes in as text rather than as alternating
     turns: the thread can start with a bot message (an alert) and have several people in it."""
     names: dict[str, str] = {bot_user_id: "Gnome Bot"}
@@ -88,8 +88,6 @@ def build_question(channel: str, thread_ts: str, current_ts: str, bot_user_id: s
 
     history, current = [], None
     for message in slack.thread_messages(channel, thread_ts, limit=THREAD_FETCH_LIMIT):
-        if message.get("ts") in skip_ts or (message.get("text") or "").startswith(PLACEHOLDER):
-            continue
         author = "Gnome Bot" if message.get("bot_id") or message.get("user") == bot_user_id else name(message.get("user", ""))
         if message.get("ts") == current_ts:
             current = (author, readable(message))
@@ -105,17 +103,45 @@ def build_question(channel: str, thread_ts: str, current_ts: str, bot_user_id: s
     return f"{prefix}Message to answer, from {current[0]}:\n{current[1]}"
 
 
-def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, placeholder_text: str, role: str,
-             prompt: Callable[[str], str], instructions: str, note_scopes: list[str],
+NOT_IN_CHANNEL = "I can't read this channel's messages yet; invite me with `/invite @Gnome Bot`."
+
+
+def _reply(channel: str, thread_ts: str, text: str, blocks: list | None = None) -> None:
+    """Posts in the thread; a Slack refusal is logged rather than raised, since a retry would only redo the work."""
+    try:
+        slack.post(channel, thread_ts, text, blocks)
+    except slack.SlackError:
+        logger.exception("Couldn't answer %s/%s: Slack refused the reply", channel, thread_ts)
+
+
+def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, react_ts: str, role: str,
+             prompt: Callable[[], str], instructions: str, note_scopes: list[str],
              render: Callable[[str], tuple[str, list | None]]) -> None:
-    """Posts a placeholder in the thread and replaces it with the agent's answer, or with why there isn't one.
-    `prompt` gets the placeholder's ts, so a transcript of the thread can leave it out; `render` turns the answer into
-    the message's text and blocks. The team notes for `note_scopes` go in the prompt, and a note the answer proposes
-    is offered under it with a Save button."""
-    placeholder = slack.post(channel, thread_ts, placeholder_text)
+    """Reacts to the message at `react_ts`, runs the agent, and posts its answer (or why there isn't one) as a new
+    reply in the thread. `render` turns the answer into the reply's text and blocks. The team notes for `note_scopes`
+    go in the prompt, and a note the answer proposes is offered under it with a Save button."""
+    try:
+        slack.add_reaction(channel, react_ts, WORKING_REACTION)
+    except slack.SlackError as error:
+        # A channel the bot isn't in, a read-only DM, an archived channel: nothing a retry would fix.
+        logger.warning("Not answering %s/%s: Slack refused the reaction (%s)", channel, thread_ts, error)
+        if "not_in_channel" in str(error):
+            _reply(channel, thread_ts, NOT_IN_CHANNEL)
+        return
+    try:
+        _work(cfg, store, channel, thread_ts, role, prompt, instructions, note_scopes, render)
+    finally:
+        try:
+            slack.remove_reaction(channel, react_ts, WORKING_REACTION)
+        except slack.SlackError:
+            logger.warning("Couldn't take the reaction off %s/%s", channel, react_ts, exc_info=True)
+
+
+def _work(cfg: BotConfig, store: Store, channel: str, thread_ts: str, role: str, prompt: Callable[[], str],
+          instructions: str, note_scopes: list[str], render: Callable[[str], tuple[str, list | None]]) -> None:
     store.track_thread(channel, thread_ts)
     if store.tokens_today() >= cfg.limits.daily_token_budget:
-        slack.update(channel, placeholder, "I've used up today's token budget, so I'm not answering until tomorrow (UTC).")
+        _reply(channel, thread_ts, "I've used up today's token budget, so I'm not answering until tomorrow (UTC).")
         alerts.once_a_day(store, "over-budget", "Gnome Bot is over its daily token budget",
                           f"Spent {store.tokens_today():,} of {cfg.limits.daily_token_budget:,} tokens today.")
         return
@@ -123,22 +149,22 @@ def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, placeho
     extra_system = "\n\n".join(p for p in (instructions, memory.INSTRUCTIONS,
                                             memory.prompt_section(store, note_scopes)) if p)
     try:
-        answer = agent.run(cfg, role, prompt(placeholder), [*READ_TOOLS, *memory.TOOLS], extra_system)
+        answer = agent.run(cfg, role, prompt(), [*READ_TOOLS, *memory.TOOLS], extra_system)
     except slack.SlackError as error:
         # It can post anywhere (chat:write.public) but only reads channels it's a member of.
         if "not_in_channel" not in str(error):
             logger.exception("Couldn't answer %s/%s", channel, thread_ts)
-            slack.update(channel, placeholder, "Something went wrong answering that; it's in my logs.")
+            _reply(channel, thread_ts, "Something went wrong answering that; it's in my logs.")
             return
-        slack.update(channel, placeholder, "I can't read this channel's messages yet; invite me with `/invite @Gnome Bot`.")
+        _reply(channel, thread_ts, NOT_IN_CHANNEL)
         return
     except llm.ModelUnavailable as error:
-        slack.update(channel, placeholder, "I can't reach my model right now (out of credit or down); try again later.")
+        _reply(channel, thread_ts, "I can't reach my model right now (out of credit or down); try again later.")
         alerts.once_a_day(store, "model-unavailable", "Gnome Bot can't reach its model", str(error)[:1000])
         return
     except Exception:
         logger.exception("Couldn't answer %s/%s", channel, thread_ts)
-        slack.update(channel, placeholder, "Something went wrong answering that; it's in my logs.")
+        _reply(channel, thread_ts, "Something went wrong answering that; it's in my logs.")
         return
 
     store.add_tokens(answer.tokens)
@@ -146,7 +172,7 @@ def _respond(cfg: BotConfig, store: Store, channel: str, thread_ts: str, placeho
     text, blocks = render(reply)
     if proposal:
         blocks = [*(blocks or slack.text_blocks(text)), *memory.propose(store, channel, thread_ts, *proposal)]
-    slack.update(channel, placeholder, text, blocks)
+    _reply(channel, thread_ts, text, blocks)
     logger.info("Answered %s/%s (%s) with %s using %d tokens", channel, thread_ts, role, answer.provider, answer.tokens)
 
 
@@ -163,8 +189,8 @@ def answer_question(message: dict, store: Store) -> None:
         return
     asked: dict[str, str] = {}
 
-    def prompt(placeholder: str) -> str:
-        asked["question"] = build_question(channel, thread_ts, message["ts"], message["bot_user_id"], {placeholder})
+    def prompt() -> str:
+        asked["question"] = build_question(channel, thread_ts, message["ts"], message["bot_user_id"])
         return asked["question"]
 
     def render(answer: str) -> tuple[str, list | None]:
@@ -178,7 +204,7 @@ def answer_question(message: dict, store: Store) -> None:
             return text, None
         return text, [*slack.text_blocks(text), fixes.fix_button(channel, thread_ts, repos)]
 
-    _respond(cfg, store, channel, thread_ts, PLACEHOLDER, "qa", prompt, CHANGE_REQUEST_INSTRUCTIONS, [memory.GENERAL],
+    _respond(cfg, store, channel, thread_ts, message["ts"], "qa", prompt, CHANGE_REQUEST_INSTRUCTIONS, [memory.GENERAL],
              render)
 
 
@@ -228,7 +254,7 @@ def triage_alert(alert: dict, store: Store) -> None:
             return text, None
         return text, [*slack.text_blocks(text), fixes.fix_button(channel, alert_ts, repos)]
 
-    _respond(cfg, store, channel, alert_ts, TRIAGE_PLACEHOLDER, "triage", lambda _: triage_prompt(alert),
+    _respond(cfg, store, channel, alert_ts, alert_ts, "triage", lambda: triage_prompt(alert),
              TRIAGE_INSTRUCTIONS, [alert["type"], memory.GENERAL], render)
 
 

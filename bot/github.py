@@ -87,10 +87,6 @@ def comment_on_pr(repo: str, pr_number: str, body: str) -> str:
     return str(_send("POST", f"/repos/{config.GITHUB_ORG}/{repo}/issues/{pr_number}/comments", {"body": body})["id"])
 
 
-def edit_pr_comment(repo: str, comment_id: str, body: str) -> None:
-    _send("PATCH", f"/repos/{config.GITHUB_ORG}/{repo}/issues/comments/{comment_id}", {"body": body})
-
-
 def read_file(repo: str, path: str) -> str:
     """A file's text from the repo's default branch."""
     data = _get(f"/repos/{config.GITHUB_ORG}/{repo}/contents/{path}")
